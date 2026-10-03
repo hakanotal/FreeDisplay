@@ -51,7 +51,11 @@ BetterDisplay is a great app, but its best features are locked behind a paid Pro
 
 ## Screenshots
 
-*Coming soon*
+<p align="center">
+  <img src="docs/Screenshot-1.png" alt="Display panel: brightness, HiDPI mode, display modes, color profile and image adjustments" height="480">
+  &nbsp;&nbsp;
+  <img src="docs/Screenshot-2.png" alt="Main menu: presets, combined brightness, night mode schedule and settings with the language switch" height="480">
+</p>
 
 ---
 

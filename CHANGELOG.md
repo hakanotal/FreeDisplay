@@ -9,10 +9,14 @@ All notable changes to FreeDisplay are documented here.
 By [@hakanotal](https://github.com/hakanotal).
 
 - **Turkish + English UI**: full Turkish translation (labels, tooltips, alerts, VoiceOver labels); live language switch in Settings → Dil / Language
+- **Night mode**: blue light filter (Off / On / Scheduled, overnight ranges, warmth slider, 1.5 s fades), applied through GammaService alongside image adjustments and software brightness
 - **macOS 27**: menu panel no longer collapses to the footer, and shrinks back when sections collapse
 - **Crash fix**: DDC brightness callbacks and the brightness OSD error handler no longer trap under Swift 6 runtime isolation checks
-- **Color profile**: subtitle shows the active ICC profile name (e.g. the monitor's EDID profile) and refreshes on change
+- **Color profile**: subtitle shows the active ICC profile name (e.g. the monitor's EDID profile) and refreshes on change; the list only offers RGB display-class profiles — applying CMYK/gray/Lab/abstract profiles aborted the app inside SkyLight
+- **Auto-restart**: "Launch at login" is now a per-user launchd agent (`~/Library/LaunchAgents/com.freedisplay.app.agent.plist`) with `KeepAlive.SuccessfulExit = false` — relaunches after a crash, not after Quit; the old SMAppService login item is migrated automatically
+- **HiDPI**: the first enable/disable makes the monitor's override folder user-writable (one admin prompt); later toggles need no password
 - **Menu**: removed built-in "Native Mode" / "HiDPI Mode" preset buttons; Settings switches right-aligned
+- **Build & release**: universal (arm64 + x86_64) builds without Xcode (`scripts/build-app-clt.sh`), versioned DMG + SHA-256 (`scripts/build-dmg.sh`), ad-hoc signing instead of the upstream team ID, MIT `LICENSE`
 
 ---
 

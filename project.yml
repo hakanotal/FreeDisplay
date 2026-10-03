@@ -17,14 +17,14 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.freedisplay.app
         MARKETING_VERSION: "2.0"
+        CURRENT_PROJECT_VERSION: "2"
         INFOPLIST_KEY_LSUIElement: true
         INFOPLIST_KEY_NSHumanReadableCopyright: "FreeDisplay - Ücretsiz ve Açık Kaynak"
         SWIFT_VERSION: "6.0"
         CODE_SIGN_ENTITLEMENTS: FreeDisplay/FreeDisplay.entitlements
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGNING_REQUIRED: YES
-        CODE_SIGN_IDENTITY: "Apple Development"
-        DEVELOPMENT_TEAM: 29W56PHWJR
+        CODE_SIGN_IDENTITY: "-"
         SWIFT_STRICT_CONCURRENCY: minimal
         SWIFT_OBJC_BRIDGING_HEADER: FreeDisplay/FreeDisplay-Bridging-Header.h
         GENERATE_INFOPLIST_FILE: YES

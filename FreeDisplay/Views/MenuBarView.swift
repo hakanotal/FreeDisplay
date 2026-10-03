@@ -67,10 +67,12 @@ struct MenuBarView: View {
     @ObservedObject private var updateService = UpdateService.shared
     @ObservedObject private var settings = SettingsService.shared
     @ObservedObject private var virtualDisplayService = VirtualDisplayService.shared
+    @ObservedObject private var nightMode = NightModeService.shared
     @State private var expandedDisplayIDs: Set<CGDirectDisplayID> = []
     @State private var showArrangement: Bool = false
     @State private var showVirtualDisplays: Bool = false
     @State private var showAutoBrightness: Bool = false
+    @State private var showNightMode: Bool = false
     @State private var showSettings: Bool = false
     @State private var quitHovered = false
     @State private var contentHeight: CGFloat = 0
@@ -176,6 +178,21 @@ struct MenuBarView: View {
 
                 if showAutoBrightness {
                     AutoBrightnessView()
+                        .padding(.leading, 8)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+
+                // Night mode (blue light filter)
+                ExpandableRow(
+                    icon: "moon.fill",
+                    iconColor: nightMode.isActive ? .indigo : .gray,
+                    label: L("Gece Modu", "Night Mode"),
+                    subtitle: NightModeView.subtitle(for: nightMode),
+                    isExpanded: $showNightMode
+                )
+
+                if showNightMode {
+                    NightModeView()
                         .padding(.leading, 8)
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }

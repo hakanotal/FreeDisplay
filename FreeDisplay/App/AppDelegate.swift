@@ -21,6 +21,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Start intercepting brightness keys to route them to the display under the cursor.
         BrightnessKeyService.shared.start()
 
+        // Apply the saved night mode state and start following its schedule.
+        NightModeService.shared.start()
+
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
             object: nil,

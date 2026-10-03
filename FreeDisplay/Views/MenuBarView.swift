@@ -55,10 +55,10 @@ struct ExpandableRow: View {
             }
         }
         .onHover { isHovered = $0 }
-        .accessibilityLabel(isExpanded ? "\(label)，已展开" : "\(label)，已折叠")
-        .accessibilityHint("点击展开或折叠此部分")
+        .accessibilityLabel(isExpanded ? "\(label), genişletildi" : "\(label), daraltıldı")
+        .accessibilityHint("Bu bölümü genişletmek veya daraltmak için tıklayın")
         .accessibilityAddTraits(.isButton)
-        .help("点击展开或折叠此部分")
+        .help("Bu bölümü genişletmek veya daraltmak için tıklayın")
     }
 }
 
@@ -119,7 +119,7 @@ struct MenuBarView: View {
                     ExpandableRow(
                         icon: "rectangle.3.offgrid",
                         iconColor: .blue,
-                        label: "排列显示器",
+                        label: "Ekranları Düzenle",
                         isExpanded: $showArrangement
                     )
 
@@ -143,7 +143,7 @@ struct MenuBarView: View {
                 }
 
                 // 工具区标题
-                Text("工具")
+                Text("Araçlar")
                     .font(.caption2)
                     .fontWeight(.semibold)
                     .foregroundColor(.secondary)
@@ -155,7 +155,7 @@ struct MenuBarView: View {
                 ExpandableRow(
                     icon: "display.2",
                     iconColor: .blue,
-                    label: "虚拟显示器",
+                    label: "Sanal Ekranlar",
                     isExpanded: $showVirtualDisplays
                 )
 
@@ -169,7 +169,7 @@ struct MenuBarView: View {
                 ExpandableRow(
                     icon: "sun.and.horizon.fill",
                     iconColor: .orange,
-                    label: "自动亮度",
+                    label: "Otomatik Parlaklık",
                     isExpanded: $showAutoBrightness
                 )
 
@@ -187,7 +187,7 @@ struct MenuBarView: View {
                 ExpandableRow(
                     icon: "gearshape.fill",
                     iconColor: .gray,
-                    label: "设置",
+                    label: "Ayarlar",
                     isExpanded: $showSettings
                 )
 
@@ -208,15 +208,15 @@ struct MenuBarView: View {
                             .foregroundColor(.green)
                             .frame(width: 20)
                             .accessibilityHidden(true)
-                        Text("新版本 v\(ver) 可用")
+                        Text("Yeni sürüm v\(ver) mevcut")
                             .font(.caption)
                             .foregroundColor(.green)
                         Spacer()
-                        Button("查看") { updateService.openReleasePage() }
+                        Button("Görüntüle") { updateService.openReleasePage() }
                             .buttonStyle(.plain)
                             .font(.caption)
                             .foregroundColor(.blue)
-                            .help("下载并安装最新版本")
+                            .help("En son sürümü indirip yükleyin")
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 5)
@@ -243,7 +243,7 @@ struct MenuBarView: View {
                 HStack(spacing: 3) {
                     Image(systemName: "xmark")
                         .accessibilityHidden(true)
-                    Text("退出")
+                    Text("Çıkış")
                 }
                 .font(.body)
                 .padding(.horizontal, 8)
@@ -255,7 +255,7 @@ struct MenuBarView: View {
             .buttonStyle(.plain)
             .foregroundColor(quitHovered ? .red : .secondary)
             .onHover { quitHovered = $0 }
-            .help("退出 FreeDisplay")
+            .help("FreeDisplay'den çık")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -298,14 +298,14 @@ struct SettingsView: View {
                 HStack(spacing: 6) {
                     MenuItemIcon(systemName: "power", color: .green)
                         .accessibilityHidden(true)
-                    Text("开机自动启动")
+                    Text("Girişte otomatik başlat")
                         .font(.body)
                 }
             }
             .toggleStyle(.switch)
             .controlSize(.small)
             .padding(.horizontal, 12)
-            .help("登录时自动启动 FreeDisplay")
+            .help("Oturum açıldığında FreeDisplay'i otomatik başlat")
 
             // 首次启动提示：建议开启开机自启
             if !settings.launchAtLoginPrompted {
@@ -314,11 +314,11 @@ struct SettingsView: View {
                         .foregroundColor(.secondary)
                         .frame(width: 16)
                         .accessibilityHidden(true)
-                    Text("建议开启开机自动启动")
+                    Text("Girişte otomatik başlatma önerilir")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Spacer()
-                    Button("知道了") {
+                    Button("Anladım") {
                         settings.launchAtLoginPrompted = true
                     }
                     .buttonStyle(.borderless)
@@ -328,7 +328,7 @@ struct SettingsView: View {
                 .padding(.vertical, 2)
                 .onAppear {
                     // Mark as prompted so it only shows once
-                    // User dismisses manually via "知道了" button
+                    // User dismisses manually via "Anladım" button
                 }
             }
 
@@ -337,28 +337,51 @@ struct SettingsView: View {
                 HStack(spacing: 6) {
                     MenuItemIcon(systemName: "sun.min.fill", color: .yellow)
                         .accessibilityHidden(true)
-                    Text("显示组合亮度控制")
+                    Text("Birleşik parlaklığı göster")
                         .font(.body)
                 }
             }
             .toggleStyle(.switch)
             .controlSize(.small)
             .padding(.horizontal, 12)
-            .help("在菜单栏显示所有显示器的统一亮度滑块")
+            .help("Menüde tüm ekranlar için tek bir parlaklık kaydırıcısı göster")
 
             // 启动时检查更新
             Toggle(isOn: $settings.checkUpdatesOnLaunch) {
                 HStack(spacing: 6) {
                     MenuItemIcon(systemName: "arrow.clockwise.circle", color: .blue)
                         .accessibilityHidden(true)
-                    Text("启动时检查更新")
+                    Text("Açılışta güncellemeleri denetle")
                         .font(.body)
                 }
             }
             .toggleStyle(.switch)
             .controlSize(.small)
             .padding(.horizontal, 12)
-            .help("每次启动时自动检查是否有新版本可用")
+            .help("Her açılışta yeni sürüm olup olmadığını otomatik denetle")
+
+            // Türkçe çeviri katkısı
+            Button {
+                if let url = URL(string: "https://github.com/hakanotal") {
+                    NSWorkspace.shared.open(url)
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "globe")
+                        .foregroundColor(.secondary)
+                        .frame(width: 16)
+                        .accessibilityHidden(true)
+                    Text("Türkçe çeviri: @hakanotal")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 12)
+            .padding(.top, 2)
+            .help("github.com/hakanotal adresini aç")
         }
         .padding(.vertical, 6)
     }
@@ -398,7 +421,7 @@ struct DisplayRowView: View {
                     }
                 }
                 if display.isMain {
-                    Text("主屏")
+                    Text("Ana")
                         .font(.caption2)
                         .foregroundColor(.blue)
                         .padding(.horizontal, 4)
@@ -410,7 +433,7 @@ struct DisplayRowView: View {
             }
             .contentShape(Rectangle())
             .onTapGesture { onToggleExpand() }
-            .help("展开显示器控制面板")
+            .help("Ekran kontrol panelini genişlet")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -423,7 +446,7 @@ struct DisplayRowView: View {
                     NSWorkspace.shared.open(url)
                 }
             } label: {
-                Label("在系统设置中打开", systemImage: "display")
+                Label("Sistem Ayarları'nda Aç", systemImage: "display")
             }
 
             Divider()
@@ -432,11 +455,11 @@ struct DisplayRowView: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(display.name, forType: .string)
             } label: {
-                Label("复制显示器名称", systemImage: "doc.on.doc")
+                Label("Ekran Adını Kopyala", systemImage: "doc.on.doc")
             }
         }
-        .accessibilityLabel("显示器：\(display.name)\(display.isMain ? "，主显示器" : "")\(isExpanded ? "，已展开" : "，已折叠")")
-        .accessibilityHint("点击展开控制面板")
+        .accessibilityLabel("Ekran: \(display.name)\(display.isMain ? ", ana ekran" : "")\(isExpanded ? ", genişletildi" : ", daraltıldı")")
+        .accessibilityHint("Kontrol panelini genişletmek için tıklayın")
         .accessibilityAddTraits(.isButton)
     }
 }

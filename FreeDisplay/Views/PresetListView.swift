@@ -110,7 +110,7 @@ private struct PresetSegmentButton: View {
         .buttonStyle(.plain)
         .disabled(isDisabled)
         .onHover { isHovered = $0 }
-        .help(isActive ? "当前模式" : "切换到\(preset.name)")
+        .help(isActive ? "Mevcut mod" : "Geçiş yap: \(preset.name)")
     }
 
     private func apply() {
@@ -150,7 +150,7 @@ struct PresetRow: View {
             Spacer()
 
             if isCurrentMatch {
-                Text("当前")
+                Text("Mevcut")
                     .font(.caption2)
                     .fontWeight(.medium)
                     .foregroundColor(.accentColor)
@@ -169,7 +169,7 @@ struct PresetRow: View {
             Button(role: .destructive) {
                 PresetService.shared.deletePreset(id: preset.id)
             } label: {
-                Label("删除", systemImage: "trash")
+                Label("Sil", systemImage: "trash")
             }
         }
         .disabled(PresetService.shared.isApplying)

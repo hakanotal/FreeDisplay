@@ -13,7 +13,7 @@ struct SavePresetView: View {
                 HStack {
                     Image(systemName: isShowingSaveForm ? "minus.circle.fill" : "plus.circle.fill")
                         .foregroundColor(.accentColor)
-                    Text(isShowingSaveForm ? "取消" : "保存为预设")
+                    Text(isShowingSaveForm ? "İptal" : "Ön Ayar Olarak Kaydet")
                         .font(.body)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -21,7 +21,7 @@ struct SavePresetView: View {
             .buttonStyle(.plain)
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
-            .help("将当前显示器配置保存为预设")
+            .help("Mevcut ekran yapılandırmasını ön ayar olarak kaydet")
 
             if isShowingSaveForm {
                 SavePresetForm(onSaved: { isShowingSaveForm = false })
@@ -39,38 +39,38 @@ struct SavePresetView: View {
 struct SavePresetForm: View {
     let onSaved: () -> Void
 
-    @State private var presetName: String = "我的预设"
+    @State private var presetName: String = "Ön Ayarım"
     @State private var selectedIcon: String = "display"
     @State private var isSaving: Bool = false
     @State private var saveError: String?
 
     private let iconOptions: [(symbol: String, label: String)] = [
-        ("display", "显示器"),
+        ("display", "Ekran"),
         ("sparkles.rectangle.stack", "HiDPI"),
-        ("rectangle.on.rectangle", "镜像"),
-        ("moon.fill", "夜间"),
-        ("sun.max.fill", "日间"),
-        ("gamecontroller.fill", "游戏"),
-        ("person.fill", "个人"),
-        ("briefcase.fill", "工作"),
+        ("rectangle.on.rectangle", "Ayna"),
+        ("moon.fill", "Gece"),
+        ("sun.max.fill", "Gündüz"),
+        ("gamecontroller.fill", "Oyun"),
+        ("person.fill", "Kişisel"),
+        ("briefcase.fill", "İş"),
     ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             // Name field
             HStack {
-                Text("名称")
+                Text("Ad")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .frame(width: 40, alignment: .leading)
-                TextField("预设名称", text: $presetName)
+                TextField("Ön ayar adı", text: $presetName)
                     .textFieldStyle(.roundedBorder)
                     .font(.caption)
             }
 
             // Icon picker
             HStack(alignment: .top) {
-                Text("图标")
+                Text("Simge")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .frame(width: 40, alignment: .leading)
@@ -106,7 +106,7 @@ struct SavePresetForm: View {
                             .scaleEffect(0.7)
                             .frame(width: 14, height: 14)
                     }
-                    Text(isSaving ? "保存中..." : "保存")
+                    Text(isSaving ? "Kaydediliyor..." : "Kaydet")
                         .frame(maxWidth: .infinity)
                 }
             }

@@ -62,7 +62,7 @@ struct ResolutionSliderView: View {
                 .onAppear {
                     syncSliderToCurrentMode()
                 }
-                .help("拖动选择分辨率")
+                .help("Çözünürlük seçmek için sürükleyin")
 
                 Text(previewModeFullString)
                     .font(.caption)
@@ -77,7 +77,7 @@ struct ResolutionSliderView: View {
             if modes.count > 1 {
                 HStack(spacing: 0) {
                     // Modes are sorted descending: index 0 = highest resolution (left), last = lowest (right)
-                    Text("最高")
+                    Text("En yüksek")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                     Spacer()
@@ -91,7 +91,7 @@ struct ResolutionSliderView: View {
                                 Circle()
                                     .fill(Color.accentColor)
                                     .frame(width: 4, height: 4)
-                                Text("推荐")
+                                Text("Önerilen")
                                     .font(.caption2)
                                     .foregroundColor(.accentColor)
                             }
@@ -101,7 +101,7 @@ struct ResolutionSliderView: View {
                     } else {
                         Spacer()
                     }
-                    Text("最低")
+                    Text("En düşük")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
@@ -131,7 +131,7 @@ struct ResolutionSliderView: View {
                 errorMessage = nil
             } else {
                 syncSliderToCurrentMode()
-                errorMessage = "切换失败，请重试"
+                errorMessage = "Geçiş başarısız, tekrar deneyin"
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
                     errorMessage = nil

@@ -4,6 +4,12 @@ All notable changes to FreeDisplay are documented here.
 
 ---
 
+## Unreleased
+
+- **Turkish UI**: the entire interface (labels, tooltips, alerts, VoiceOver labels, permission prompt) is translated into Turkish — arayüz Türkçeye çevrildi (by [@hakanotal](https://github.com/hakanotal))
+
+---
+
 ## v1.0.0 (2026-03-05)
 
 Initial public release — full-featured BetterDisplay alternative.

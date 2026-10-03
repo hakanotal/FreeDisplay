@@ -404,8 +404,8 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_LSUIElement = YES;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "FreeDisplay - Free & Open Source";
-				INFOPLIST_KEY_NSScreenCaptureUsageDescription = "FreeDisplay 需要屏幕录制权限以显示各显示器的实时画面预览。";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "FreeDisplay - Ücretsiz ve Açık Kaynak";
+				INFOPLIST_KEY_NSScreenCaptureUsageDescription = "FreeDisplay, ekranların canlı önizlemesini göstermek için ekran kaydı iznine ihtiyaç duyar.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -431,8 +431,8 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_LSUIElement = YES;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "FreeDisplay - Free & Open Source";
-				INFOPLIST_KEY_NSScreenCaptureUsageDescription = "FreeDisplay 需要屏幕录制权限以显示各显示器的实时画面预览。";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "FreeDisplay - Ücretsiz ve Açık Kaynak";
+				INFOPLIST_KEY_NSScreenCaptureUsageDescription = "FreeDisplay, ekranların canlı önizlemesini göstermek için ekran kaydı iznine ihtiyaç duyar.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",

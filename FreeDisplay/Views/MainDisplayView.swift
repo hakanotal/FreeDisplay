@@ -13,7 +13,7 @@ struct MainDisplayView: View {
             if display.isMain {
                 HStack {
                     MenuItemIcon(systemName: "m.circle.fill", color: .blue)
-                    Text("当前主显示屏")
+                    Text("Mevcut ana ekran")
                         .font(.body)
                     Spacer()
                 }
@@ -22,7 +22,7 @@ struct MainDisplayView: View {
             } else {
                 HStack {
                     MenuItemIcon(systemName: "m.circle.fill", color: .blue)
-                    Text("设为主显示屏")
+                    Text("Ana ekran yap")
                         .font(.body)
                     Spacer()
                 }
@@ -38,7 +38,7 @@ struct MainDisplayView: View {
                             among: displayManager.displays
                         )
                         if !success {
-                            errorMessage = "设置主显示屏失败"
+                            errorMessage = "Ana ekran ayarlanamadı"
                             Task { @MainActor in
                                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                                 errorMessage = nil

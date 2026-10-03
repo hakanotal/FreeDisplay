@@ -6,6 +6,8 @@ BetterDisplay is a great app, but its best features are locked behind a paid Pro
 
 [Download Latest Release](https://github.com/huberdf/FreeDisplay/releases/latest) | [Report an Issue](https://github.com/huberdf/FreeDisplay/issues)
 
+> 🇹🇷 **Turkish edition** — this fork's entire interface is translated into Turkish (arayüz tamamen Türkçe) by [@hakanotal](https://github.com/hakanotal).
+
 ---
 
 ## What BetterDisplay Features Does This Replace?
@@ -112,6 +114,13 @@ Issues and PRs welcome. This project uses:
 - `xcodegen` for project generation (edit `project.yml`, not `.xcodeproj`)
 - Swift 6 with `SWIFT_STRICT_CONCURRENCY: minimal`
 - MVVM architecture (View → ViewModel → Service)
+
+---
+
+## Contributors
+
+- [@huberdf](https://github.com/huberdf) — original author
+- [@hakanotal](https://github.com/hakanotal) — Turkish translation (Türkçe çeviri)
 
 ---
 

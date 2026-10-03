@@ -198,7 +198,7 @@ final class PresetService: ObservableObject, @unchecked Sendable {
         let externals = DisplayManagerAccessor.shared.displays.filter { $0.isOnline && !$0.isBuiltin }
         guard !externals.isEmpty else { return [] }
 
-        // --- 原生模式 ---
+        // --- Native mode ---
         let nativeEntries: [DisplayPresetEntry] = externals.map { display in
             let nativeMode: DisplayMode? = display.availableModes
                 .filter { !$0.isHiDPI }
@@ -225,7 +225,7 @@ final class PresetService: ObservableObject, @unchecked Sendable {
 
         var result: [DisplayPreset] = [nativePreset]
 
-        // --- HiDPI 模式 ---
+        // --- HiDPI mode ---
         // Find the best HiDPI mode for each external display (highest logical resolution)
         let hasExternalWithHiDPI = externals.contains { display in
             display.availableModes.contains { $0.isHiDPI }

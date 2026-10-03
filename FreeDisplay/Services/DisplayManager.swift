@@ -89,7 +89,7 @@ class DisplayManager: ObservableObject {
         displays = updatedDisplays
         DisplayManagerAccessor.shared.displays = updatedDisplays
 
-        // Regenerate built-in presets (HiDPI 模式 / 原生模式) from updated display list.
+        // Regenerate built-in presets (HiDPI Mode / Native Mode) from updated display list.
         PresetService.shared.refreshBuiltins()
 
         // Only load details / refresh brightness for newly appeared displays

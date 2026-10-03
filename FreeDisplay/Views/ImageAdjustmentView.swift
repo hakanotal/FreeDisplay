@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Expandable "图像调整" section — 11 sliders for software gamma/image adjustments.
+/// Expandable "Image Adjustments" section — 11 sliders for software gamma/image adjustments.
 /// Mirrors BetterDisplay's Image Adjustment panel.
 struct ImageAdjustmentView: View {
     @ObservedObject var display: DisplayInfo

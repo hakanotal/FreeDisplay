@@ -1,7 +1,7 @@
 import SwiftUI
 import CoreGraphics
 
-/// "虚拟显示器" management section shown in the MenuBarView tools area.
+/// "Virtual Displays" management section shown in the MenuBarView tools area.
 /// Lists all saved virtual display configurations and allows creating / deleting them.
 struct VirtualDisplayView: View {
     @StateObject private var service = VirtualDisplayService.shared

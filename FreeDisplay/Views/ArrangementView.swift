@@ -181,7 +181,7 @@ private struct DisplayThumbnailView: View {
 
     var body: some View {
         ZStack {
-            // 背景填充
+            // Background fill
             RoundedRectangle(cornerRadius: 4)
                 .fill(
                     display.isBuiltin
@@ -198,7 +198,7 @@ private struct DisplayThumbnailView: View {
                         )
                 )
 
-            // 外接显示器顶部装饰横条（边框感）
+            // Decorative top bar on external displays (bezel look)
             if !display.isBuiltin {
                 VStack {
                     RoundedRectangle(cornerRadius: 2)
@@ -210,7 +210,7 @@ private struct DisplayThumbnailView: View {
                 .padding(.top, 3)
             }
 
-            // 显示器名称 + 主显示标记
+            // Display name + main-display badge
             VStack(spacing: 2) {
                 Text(display.name)
                     .font(.system(size: 8, weight: .medium))

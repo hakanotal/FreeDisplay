@@ -73,7 +73,7 @@ struct ResolutionSliderView: View {
                     .animation(.easeInOut(duration: 0.15), value: sliderIndex)
             }
 
-            // Milestone labels: 最低 / 推荐 / 最高
+            // Milestone labels: lowest / recommended / highest
             if modes.count > 1 {
                 HStack(spacing: 0) {
                     // Modes are sorted descending: index 0 = highest resolution (left), last = lowest (right)

@@ -4,6 +4,18 @@ All notable changes to FreeDisplay are documented here.
 
 ---
 
+## v2.1 (2026-10-03)
+
+Crash fixes from a full code review.
+
+- **Resolution fallback crash**: the private `CGSConfigureDisplayMode` was declared and called with a connection ID instead of a `CGDisplayConfigRef`, so CoreGraphics dereferenced a bogus pointer whenever the normal mode switch failed (e.g. around reconnect or wake). Now uses the real signature inside a display configuration transaction
+- **Display arrangement crash**: `CGCancelDisplayConfiguration` was called after a failed `CGCompleteDisplayConfiguration`, which already invalidates the configuration (use-after-free), e.g. when auto-arrange runs while an app is full screen
+- **Brightness keys**: the event tap no longer leaks one event per media key press (`passUnretained` for pass-through events)
+- **DDC**: IOAVService objects that fail the I2C probe are released instead of leaked
+- **Hardening**: XPC OSD handlers are explicitly `@Sendable`; HiDPI auto-enable skips FreeDisplay's own virtual displays (no admin prompt on the main thread)
+
+---
+
 ## v2.0 (2026-10-02) — Turkish edition
 
 By [@hakanotal](https://github.com/hakanotal).

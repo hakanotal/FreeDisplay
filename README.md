@@ -15,7 +15,7 @@ BetterDisplay is a great app, but its best features are locked behind a paid Pro
 - **Turkish + English UI** — full Turkish translation; switch languages live in Settings → Dil / Language
 - **Night mode** — blue light filter that warms all displays, always on or on a daily schedule
 - **macOS 27 fixes** — menu no longer collapses to just the footer, and it shrinks back when sections collapse
-- **Crash fix** — no more crashes when changing brightness or applying presets (Swift 6 threading bug)
+- **Crash fixes** — brightness/presets, color profiles, resolution fallback and display arrangement no longer crash the app
 - **Color profile** — shows the active profile (e.g. your monitor's own) instead of "Unknown", and updates live; only display-compatible profiles are listed (picking a CMYK/gray profile used to crash)
 - **Auto-restart** — with "Launch at login" on, FreeDisplay relaunches itself after a crash (Quit still quits)
 - **HiDPI** — asks for your password once per monitor instead of on every enable/disable
@@ -63,7 +63,7 @@ BetterDisplay is a great app, but its best features are locked behind a paid Pro
 
 ### Option 1: Download DMG
 
-1. Download `FreeDisplay-2.0.dmg` from [Releases](https://github.com/hakanotal/FreeDisplayTurkish/releases/latest) (universal: Apple Silicon + Intel, macOS 14+)
+1. Download the latest `FreeDisplay-<version>.dmg` from [Releases](https://github.com/hakanotal/FreeDisplayTurkish/releases/latest) (universal: Apple Silicon + Intel, macOS 14+)
 2. Open the DMG and drag **FreeDisplay.app** to **Applications**
 3. First launch: the app isn't notarized, so macOS blocks it once. Open it, then go to **System Settings → Privacy & Security** and click **Open Anyway** — or run:
    ```bash

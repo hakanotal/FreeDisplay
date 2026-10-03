@@ -16,6 +16,8 @@ Hard-won constraints. Each one cost real debugging time; don't relearn them.
 - `CGVirtualDisplay`: `vendorID` must be non-zero (e.g. `0xEEEE`) or init returns nil. `CGVirtualDisplay(descriptor:)` must run on the main thread; `apply(settings)` can run in the background.
 - Bridging-header property names must match the runtime exactly (`maxPixelsWide`/`maxPixelsHigh`, not `maxPixelSize`). Use Chromium's `virtual_display_mac_util.mm` as the reference, never guess.
 - Virtual display configs are runtime-only. Auto-recreating them on launch piles up stale displays.
+- `CGSConfigureDisplayMode(CGDisplayConfigRef config, CGDirectDisplayID, int modeNum)` takes the transaction from `CGBeginDisplayConfiguration` as its first argument (see CGSInternal). Passing a connection ID makes CoreGraphics dereference a bogus pointer.
+- Applying a non-display ICC profile (CMYK, gray, Lab/XYZ, abstract, named color) with `ColorSyncDeviceSetCustomProfiles` aborts the app inside SkyLight. Only offer `mntr` class + `RGB ` profiles. Read ICC signatures from `ColorSyncProfileCopyData`; `ColorSyncProfileCopyHeader` returns byte-swapped fields (`BGR `).
 
 ## DDC / IOKit
 
@@ -37,6 +39,9 @@ Hard-won constraints. Each one cost real debugging time; don't relearn them.
 - Set `NSWindow.isReleasedWhenClosed = false` for windows you keep in a dictionary.
 - Don't mutate a dictionary while iterating it; collect the keys first.
 - Wrap blocking WindowServer calls in `CGHelpers.runWithTimeout`.
+- `CGCompleteDisplayConfiguration` invalidates the config on return, even when it fails. Never call `CGCancelDisplayConfiguration` after it (use-after-free); cancel only before completing.
+- Event tap callbacks don't own the passed-in event: return `Unmanaged.passUnretained(event)` to pass it through. `passRetained` leaks one event per call.
+- Swift 6 inserts a runtime main-thread check into closures created in a `@MainActor` context and passed as non-`@Sendable` parameters. If such a closure runs on another queue (DDC completions, XPC handlers), the app traps. Mark completion handlers that run off-main `@Sendable`.
 
 ## SwiftUI / MenuBarExtra
 

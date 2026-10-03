@@ -16,8 +16,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.freedisplay.app
-        MARKETING_VERSION: "2.0"
-        CURRENT_PROJECT_VERSION: "2"
+        MARKETING_VERSION: "2.1"
+        CURRENT_PROJECT_VERSION: "3"
         INFOPLIST_KEY_LSUIElement: true
         INFOPLIST_KEY_NSHumanReadableCopyright: "FreeDisplay - Ücretsiz ve Açık Kaynak"
         SWIFT_VERSION: "6.0"

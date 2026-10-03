@@ -247,6 +247,10 @@ final class DDCService: ObservableObject, @unchecked Sendable {
                 // Retain io_service_t so we can walk its parent chain in buildAVServiceMap
                 IOObjectRetain(service)
                 workingPairs.append((service: avService, ioEntry: service))
+            } else {
+                // IOAVServiceCreateWithService follows the Create rule; an unusable service
+                // isn't stored anywhere, so release it instead of leaking one per probe.
+                Unmanaged<AnyObject>.fromOpaque(UnsafeRawPointer(avService)).release()
             }
             IOObjectRelease(service)
             service = IOIteratorNext(iterator)

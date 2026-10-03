@@ -126,6 +126,8 @@ class DisplayManager: ObservableObject {
         let vendor = display.vendorNumber
         let product = display.modelNumber
         guard vendor != 0, product != 0 else { return }
+        // Skip FreeDisplay's own virtual displays (VirtualDisplayService uses vendor 0xEEEE).
+        guard vendor != 0xEEEE else { return }
 
         // Already enabled — nothing to do
         guard !HiDPIService.shared.isHiDPIEnabled(vendor: vendor, product: product) else { return }

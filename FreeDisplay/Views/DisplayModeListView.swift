@@ -49,7 +49,7 @@ struct DisplayModeListView: View {
         VStack(alignment: .leading, spacing: 0) {
             // Header
             HStack {
-                Text("Ekran Modları")
+                Text(L("Ekran Modları", "Display Modes"))
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Spacer()
@@ -59,14 +59,14 @@ struct DisplayModeListView: View {
                         .foregroundColor(.accentColor)
                 }
                 .buttonStyle(.plain)
-                .help("Mod listesini yenile")
+                .help(L("Mod listesini yenile", "Refresh mode list"))
             }
             .padding(.horizontal, 12)
             .padding(.top, 6)
             .padding(.bottom, 2)
 
             if resolutionGroups.isEmpty {
-                Text("Kullanılabilir ekran modu yok")
+                Text(L("Kullanılabilir ekran modu yok", "No display modes available"))
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .padding(.horizontal, 12)
@@ -90,7 +90,7 @@ struct DisplayModeListView: View {
                         withAnimation(.easeInOut(duration: 0.2)) { showAllModes.toggle() }
                     }) {
                         HStack(spacing: 4) {
-                            Text(showAllModes ? "Daralt" : "Tümünü göster (\(resolutionGroups.count))")
+                            Text(showAllModes ? L("Daralt", "Show Less") : L("Tümünü göster (\(resolutionGroups.count))", "Show all (\(resolutionGroups.count))"))
                                 .font(.caption)
                                 .foregroundColor(.accentColor)
                             Image(systemName: showAllModes ? "chevron.up" : "chevron.down")
@@ -162,7 +162,7 @@ struct DisplayModeListView: View {
                 errorMessage = nil
             } else {
                 withAnimation {
-                    errorMessage = "\(mode.resolutionString) moduna geçilemedi, tekrar deneyin"
+                    errorMessage = L("\(mode.resolutionString) moduna geçilemedi, tekrar deneyin", "Couldn't switch to \(mode.resolutionString), please try again")
                 }
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -247,7 +247,7 @@ private struct ResolutionRow: View {
                 }
 
                 if isCurrent {
-                    Text("Mevcut")
+                    Text(L("Mevcut", "Current"))
                         .font(.caption2)
                         .foregroundColor(.white)
                         .padding(.horizontal, 5)
@@ -312,7 +312,7 @@ private struct RefreshRatePicker: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            Text("Yenileme Hızı")
+            Text(L("Yenileme Hızı", "Refresh Rate"))
                 .font(.caption2)
                 .foregroundColor(.secondary)
 

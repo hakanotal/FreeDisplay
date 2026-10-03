@@ -24,10 +24,10 @@ struct ImageAdjustmentView: View {
         VStack(alignment: .leading, spacing: 0) {
 
             // ── Group 1: Global adjustments ────────────────────────────────
-            adjustRow(icon: "circle.righthalf.filled",   label: "Kontrast",  value: $contrast).help("Kontrastı ayarla")
-            adjustRow(icon: "sparkle",                   label: "Gama",  value: $gammaVal).help("Gamayı ayarla")
-            adjustRow(icon: "bolt.fill",                 label: "Kazanç",    value: $gain).help("Kazancı ayarla")
-            adjustRow(icon: "thermometer.medium",        label: "Sıcaklık",    value: $colorTemperature).help("Renk sıcaklığını ayarla")
+            adjustRow(icon: "circle.righthalf.filled",   label: L("Kontrast", "Contrast"),  value: $contrast).help(L("Kontrastı ayarla", "Adjust contrast"))
+            adjustRow(icon: "sparkle",                   label: L("Gama", "Gamma"),  value: $gammaVal).help(L("Gamayı ayarla", "Adjust gamma"))
+            adjustRow(icon: "bolt.fill",                 label: L("Kazanç", "Gain"),    value: $gain).help(L("Kazancı ayarla", "Adjust gain"))
+            adjustRow(icon: "thermometer.medium",        label: L("Sıcaklık", "Temperature"),    value: $colorTemperature).help(L("Renk sıcaklığını ayarla", "Adjust color temperature"))
             quantizationRow
 
             Divider()
@@ -35,18 +35,18 @@ struct ImageAdjustmentView: View {
                 .padding(.vertical, 2)
 
             // ── Group 2: Per-channel gamma ─────────────────────────────────
-            adjustRow(icon: "r.circle",      label: "Gama R",  value: $rGamma, accent: .red).help("Kırmızı gamayı ayarla")
-            adjustRow(icon: "g.circle",      label: "Gama G",  value: $gGamma, accent: .green).help("Yeşil gamayı ayarla")
-            adjustRow(icon: "b.circle",      label: "Gama B",  value: $bGamma, accent: .blue).help("Mavi gamayı ayarla")
+            adjustRow(icon: "r.circle",      label: L("Gama R", "Gamma R"),  value: $rGamma, accent: .red).help(L("Kırmızı gamayı ayarla", "Adjust red gamma"))
+            adjustRow(icon: "g.circle",      label: L("Gama G", "Gamma G"),  value: $gGamma, accent: .green).help(L("Yeşil gamayı ayarla", "Adjust green gamma"))
+            adjustRow(icon: "b.circle",      label: L("Gama B", "Gamma B"),  value: $bGamma, accent: .blue).help(L("Mavi gamayı ayarla", "Adjust blue gamma"))
 
             Divider()
                 .padding(.horizontal, 12)
                 .padding(.vertical, 2)
 
             // ── Group 3: Per-channel gain ──────────────────────────────────
-            adjustRow(icon: "r.circle.fill", label: "Kazanç R",    value: $rGain,  accent: .red).help("Kırmızı kazancı ayarla")
-            adjustRow(icon: "g.circle.fill", label: "Kazanç G",    value: $gGain,  accent: .green).help("Yeşil kazancı ayarla")
-            adjustRow(icon: "b.circle.fill", label: "Kazanç B",    value: $bGain,  accent: .blue).help("Mavi kazancı ayarla")
+            adjustRow(icon: "r.circle.fill", label: L("Kazanç R", "Gain R"),    value: $rGain,  accent: .red).help(L("Kırmızı kazancı ayarla", "Adjust red gain"))
+            adjustRow(icon: "g.circle.fill", label: L("Kazanç G", "Gain G"),    value: $gGain,  accent: .green).help(L("Yeşil kazancı ayarla", "Adjust green gain"))
+            adjustRow(icon: "b.circle.fill", label: L("Kazanç B", "Gain B"),    value: $bGain,  accent: .blue).help(L("Mavi kazancı ayarla", "Adjust blue gain"))
 
             Divider()
                 .padding(.horizontal, 12)
@@ -57,7 +57,7 @@ struct ImageAdjustmentView: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundColor(.yellow)
                     .font(.caption)
-                Text("Ayarlar HDR içeriği etkileyebilir!")
+                Text(L("Ayarlar HDR içeriği etkileyebilir!", "Adjustments may affect HDR content!"))
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -67,17 +67,17 @@ struct ImageAdjustmentView: View {
             // ── Action buttons ─────────────────────────────────────────────
             HStack(spacing: 8) {
                 actionButton(
-                    title: "Ters Çevir",
+                    title: L("Ters Çevir", "Invert"),
                     systemImage: "circle.lefthalf.filled",
                     isActive: isInverted
                 ) {
                     isInverted.toggle()
                     commitAdjustment()
                 }
-                .help("Ekran renklerini ters çevir (gece moduna benzer)")
+                .help(L("Ekran renklerini ters çevir (gece moduna benzer)", "Invert display colors (similar to night mode)"))
 
                 actionButton(
-                    title: isPaused ? "Devam Et" : "Duraklat",
+                    title: isPaused ? L("Devam Et", "Resume") : L("Duraklat", "Pause"),
                     systemImage: isPaused ? "play.circle" : "pause.circle",
                     isActive: isPaused
                 ) {
@@ -88,16 +88,16 @@ struct ImageAdjustmentView: View {
                         commitAdjustment()
                     }
                 }
-                .help("Renk ayarlarını geçici olarak devre dışı bırak, orijinal görüntüye dön")
+                .help(L("Renk ayarlarını geçici olarak devre dışı bırak, orijinal görüntüye dön", "Temporarily disable color adjustments and restore the original image"))
 
                 actionButton(
-                    title: "Tümünü Sıfırla",
+                    title: L("Tümünü Sıfırla", "Reset All"),
                     systemImage: "arrow.counterclockwise",
                     isActive: false
                 ) {
                     resetAll()
                 }
-                .help("Tüm renk ayarlarını varsayılana sıfırla")
+                .help(L("Tüm renk ayarlarını varsayılana sıfırla", "Reset all color adjustments to defaults"))
             }
             .padding(.horizontal, 12)
             .padding(.bottom, 8)
@@ -161,14 +161,14 @@ struct ImageAdjustmentView: View {
                 .frame(width: 18)
                 .font(.caption)
 
-            Text("Niceleme")
+            Text(L("Niceleme", "Quantization"))
                 .font(.caption)
                 .frame(width: 72, alignment: .leading)
 
             Slider(value: $quantLevels, in: 2...256, step: 1) { _ in
                 commitAdjustment()
             }
-            .help("Niceleme düzeyini ayarla")
+            .help(L("Niceleme düzeyini ayarla", "Adjust quantization level"))
 
             Text(quantLevels >= 255 ? "∞" : "\(Int(quantLevels))")
                 .font(.caption)

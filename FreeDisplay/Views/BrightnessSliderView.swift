@@ -20,7 +20,7 @@ struct BrightnessSliderView: View {
                         .fill(Color.blue)
                         .frame(width: 5, height: 5)
                         .accessibilityHidden(true)
-                    Text("Sistem")
+                    Text(L("Sistem", "System"))
                         .font(.caption2)
                         .foregroundColor(.blue)
                 } else if let status = ddcStatus {
@@ -28,15 +28,15 @@ struct BrightnessSliderView: View {
                         .fill(status ? Color.green : Color.orange)
                         .frame(width: 5, height: 5)
                         .accessibilityHidden(true)
-                    Text(status ? "DDC" : "Yazılım")
+                    Text(status ? "DDC" : L("Yazılım", "Software"))
                         .font(.caption2)
                         .foregroundColor(status ? .green : .orange)
                 }
             }
             .padding(.horizontal, 12)
             .padding(.top, 2)
-            .accessibilityLabel(display.isBuiltin ? "Parlaklık kontrol modu: Sistem" : "Parlaklık kontrol modu: \(ddcStatus == true ? "DDC donanım" : "Yazılım")")
-            .help(display.isBuiltin ? "Sistem parlaklığı: Dahili ekran parlaklığı sistem API'si ile kontrol edilir" : "DDC: Parlaklık doğrudan donanımla kontrol edilir\nYazılım: Parlaklık yazılımla ayarlanır")
+            .accessibilityLabel(display.isBuiltin ? L("Parlaklık kontrol modu: Sistem", "Brightness control mode: System") : L("Parlaklık kontrol modu: \(ddcStatus == true ? "DDC donanım" : "Yazılım")", "Brightness control mode: \(ddcStatus == true ? "DDC hardware" : "Software")"))
+            .help(display.isBuiltin ? L("Sistem parlaklığı: Dahili ekran parlaklığı sistem API'si ile kontrol edilir", "System brightness: built-in display brightness is controlled via the system API") : L("DDC: Parlaklık doğrudan donanımla kontrol edilir\nYazılım: Parlaklık yazılımla ayarlanır", "DDC: Brightness is controlled directly by the hardware\nSoftware: Brightness is adjusted in software"))
 
             HStack(spacing: 6) {
                 let sunIcon: String = {
@@ -69,9 +69,9 @@ struct BrightnessSliderView: View {
                         lastDDCWrite = Date()
                     }
                 }
-                .accessibilityLabel("Ekran parlaklığı")
+                .accessibilityLabel(L("Ekran parlaklığı", "Display brightness"))
                 .accessibilityValue("\(Int(localBrightness))%")
-                .help("Parlaklığı ayarlamak için sürükleyin")
+                .help(L("Parlaklığı ayarlamak için sürükleyin", "Drag to adjust brightness"))
                 .onChange(of: localBrightness) { _, newValue in
                     guard isDragging else { return }
                     // Apply immediately — the service chooses software or DDC internally.
@@ -97,7 +97,7 @@ struct BrightnessSliderView: View {
                     .accessibilityHidden(true)
 
                 let brightnessLabel: String = {
-                    if ddcStatus == false { return "Yazılım \(Int(localBrightness))%" }
+                    if ddcStatus == false { return L("Yazılım \(Int(localBrightness))%", "Software \(Int(localBrightness))%") }
                     return "\(Int(localBrightness))%"
                 }()
                 Text(brightnessLabel)
@@ -150,7 +150,7 @@ struct CombinedBrightnessView: View {
                     .foregroundColor(.yellow)
                     .font(.caption)
                     .accessibilityHidden(true)
-                Text("Parlaklık (Birleşik)")
+                Text(L("Parlaklık (Birleşik)", "Brightness (Combined)"))
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Spacer()
@@ -179,7 +179,7 @@ struct CombinedBrightnessView: View {
                         lastDDCWrite = Date()
                     }
                 }
-                .accessibilityLabel("Birleşik parlaklık")
+                .accessibilityLabel(L("Birleşik parlaklık", "Combined brightness"))
                 .accessibilityValue("\(Int(combinedBrightness))%")
                 .onChange(of: combinedBrightness) { _, newValue in
                     guard isDragging else { return }

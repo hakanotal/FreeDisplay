@@ -217,7 +217,7 @@ final class PresetService: ObservableObject, @unchecked Sendable {
         }
 
         var nativePreset = DisplayPreset(
-            name: "Doğal Mod",
+            name: L("Doğal Mod", "Native Mode"),
             icon: "rectangle.on.rectangle",
             displays: nativeEntries
         )
@@ -262,7 +262,7 @@ final class PresetService: ObservableObject, @unchecked Sendable {
                 }
             }
             var hidpiPreset = DisplayPreset(
-                name: "HiDPI Modu",
+                name: L("HiDPI Modu", "HiDPI Mode"),
                 icon: "sparkles",
                 displays: hidpiEntries
             )

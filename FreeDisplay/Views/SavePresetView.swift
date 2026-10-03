@@ -13,7 +13,7 @@ struct SavePresetView: View {
                 HStack {
                     Image(systemName: isShowingSaveForm ? "minus.circle.fill" : "plus.circle.fill")
                         .foregroundColor(.accentColor)
-                    Text(isShowingSaveForm ? "İptal" : "Ön Ayar Olarak Kaydet")
+                    Text(isShowingSaveForm ? L("İptal", "Cancel") : L("Ön Ayar Olarak Kaydet", "Save as Preset"))
                         .font(.body)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -21,7 +21,7 @@ struct SavePresetView: View {
             .buttonStyle(.plain)
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
-            .help("Mevcut ekran yapılandırmasını ön ayar olarak kaydet")
+            .help(L("Mevcut ekran yapılandırmasını ön ayar olarak kaydet", "Save the current display configuration as a preset"))
 
             if isShowingSaveForm {
                 SavePresetForm(onSaved: { isShowingSaveForm = false })
@@ -39,38 +39,38 @@ struct SavePresetView: View {
 struct SavePresetForm: View {
     let onSaved: () -> Void
 
-    @State private var presetName: String = "Ön Ayarım"
+    @State private var presetName: String = L("Ön Ayarım", "My Preset")
     @State private var selectedIcon: String = "display"
     @State private var isSaving: Bool = false
     @State private var saveError: String?
 
     private let iconOptions: [(symbol: String, label: String)] = [
-        ("display", "Ekran"),
+        ("display", L("Ekran", "Display")),
         ("sparkles.rectangle.stack", "HiDPI"),
-        ("rectangle.on.rectangle", "Ayna"),
-        ("moon.fill", "Gece"),
-        ("sun.max.fill", "Gündüz"),
-        ("gamecontroller.fill", "Oyun"),
-        ("person.fill", "Kişisel"),
-        ("briefcase.fill", "İş"),
+        ("rectangle.on.rectangle", L("Ayna", "Mirror")),
+        ("moon.fill", L("Gece", "Night")),
+        ("sun.max.fill", L("Gündüz", "Day")),
+        ("gamecontroller.fill", L("Oyun", "Gaming")),
+        ("person.fill", L("Kişisel", "Personal")),
+        ("briefcase.fill", L("İş", "Work")),
     ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             // Name field
             HStack {
-                Text("Ad")
+                Text(L("Ad", "Name"))
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .frame(width: 40, alignment: .leading)
-                TextField("Ön ayar adı", text: $presetName)
+                TextField(L("Ön ayar adı", "Preset name"), text: $presetName)
                     .textFieldStyle(.roundedBorder)
                     .font(.caption)
             }
 
             // Icon picker
             HStack(alignment: .top) {
-                Text("Simge")
+                Text(L("Simge", "Icon"))
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .frame(width: 40, alignment: .leading)
@@ -106,7 +106,7 @@ struct SavePresetForm: View {
                             .scaleEffect(0.7)
                             .frame(width: 14, height: 14)
                     }
-                    Text(isSaving ? "Kaydediliyor..." : "Kaydet")
+                    Text(isSaving ? L("Kaydediliyor...", "Saving...") : L("Kaydet", "Save"))
                         .frame(maxWidth: .infinity)
                 }
             }

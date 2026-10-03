@@ -4,9 +4,15 @@ All notable changes to FreeDisplay are documented here.
 
 ---
 
-## Unreleased
+## v2.0 (2026-10-02) — Turkish edition
 
-- **Turkish UI**: the entire interface (labels, tooltips, alerts, VoiceOver labels, permission prompt) is translated into Turkish — arayüz Türkçeye çevrildi (by [@hakanotal](https://github.com/hakanotal))
+By [@hakanotal](https://github.com/hakanotal).
+
+- **Turkish + English UI**: full Turkish translation (labels, tooltips, alerts, VoiceOver labels); live language switch in Settings → Dil / Language
+- **macOS 27**: menu panel no longer collapses to the footer, and shrinks back when sections collapse
+- **Crash fix**: DDC brightness callbacks and the brightness OSD error handler no longer trap under Swift 6 runtime isolation checks
+- **Color profile**: subtitle shows the active ICC profile name (e.g. the monitor's EDID profile) and refreshes on change
+- **Menu**: removed built-in "Native Mode" / "HiDPI Mode" preset buttons; Settings switches right-aligned
 
 ---
 

@@ -86,7 +86,7 @@ final class HiDPIService: @unchecked Sendable {
         ]
 
         guard let data = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0) else {
-            return "Plist verisi oluşturulamadı"
+            return L("Plist verisi oluşturulamadı", "Failed to generate plist data")
         }
 
         // Write to a temp file first, then use privileged helper to move it
@@ -94,7 +94,7 @@ final class HiDPIService: @unchecked Sendable {
         do {
             try data.write(to: URL(fileURLWithPath: tmpPath), options: .atomic)
         } catch {
-            return "Geçici dosya yazılamadı: \(error.localizedDescription)"
+            return L("Geçici dosya yazılamadı: \(error.localizedDescription)", "Failed to write temporary file: \(error.localizedDescription)")
         }
 
         // Use AppleScript to get admin privileges for writing to /Library/Displays/
@@ -131,15 +131,15 @@ final class HiDPIService: @unchecked Sendable {
             """
         var error: NSDictionary?
         guard let appleScript = NSAppleScript(source: script) else {
-            return "AppleScript oluşturulamadı"
+            return L("AppleScript oluşturulamadı", "Failed to create AppleScript")
         }
         appleScript.executeAndReturnError(&error)
         if let error = error {
-            let msg = error[NSAppleScript.errorMessage] as? String ?? "Bilinmeyen hata"
+            let msg = error[NSAppleScript.errorMessage] as? String ?? L("Bilinmeyen hata", "Unknown error")
             if msg.contains("canceled") || msg.contains("Cancel") {
-                return "Yetkilendirme kullanıcı tarafından iptal edildi"
+                return L("Yetkilendirme kullanıcı tarafından iptal edildi", "Authorization was canceled by the user")
             }
-            return "Yönetici yetkilendirmesi başarısız: \(msg)"
+            return L("Yönetici yetkilendirmesi başarısız: \(msg)", "Administrator authorization failed: \(msg)")
         }
         return nil
     }

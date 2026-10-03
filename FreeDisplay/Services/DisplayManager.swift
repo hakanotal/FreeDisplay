@@ -160,6 +160,13 @@ class DisplayManager: ObservableObject {
 
     /// Debounces calls to `arrangeExternalAboveBuiltin()` — coalesces bursts of config-change
     /// callbacks into a single rearrange that fires 500 ms after the last callback arrives.
+    /// Re-applies app-generated display names after an in-app language switch.
+    func relocalizeDisplayNames() {
+        for display in displays where display.isBuiltin {
+            display.name = DisplayInfo.builtinDisplayName
+        }
+    }
+
     func scheduleAutoArrange() {
         autoArrangeWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in

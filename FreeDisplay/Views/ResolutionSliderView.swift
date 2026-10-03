@@ -62,7 +62,7 @@ struct ResolutionSliderView: View {
                 .onAppear {
                     syncSliderToCurrentMode()
                 }
-                .help("Çözünürlük seçmek için sürükleyin")
+                .help(L("Çözünürlük seçmek için sürükleyin", "Drag to choose a resolution"))
 
                 Text(previewModeFullString)
                     .font(.caption)
@@ -77,7 +77,7 @@ struct ResolutionSliderView: View {
             if modes.count > 1 {
                 HStack(spacing: 0) {
                     // Modes are sorted descending: index 0 = highest resolution (left), last = lowest (right)
-                    Text("En yüksek")
+                    Text(L("En yüksek", "Highest"))
                         .font(.caption2)
                         .foregroundColor(.secondary)
                     Spacer()
@@ -91,7 +91,7 @@ struct ResolutionSliderView: View {
                                 Circle()
                                     .fill(Color.accentColor)
                                     .frame(width: 4, height: 4)
-                                Text("Önerilen")
+                                Text(L("Önerilen", "Recommended"))
                                     .font(.caption2)
                                     .foregroundColor(.accentColor)
                             }
@@ -101,7 +101,7 @@ struct ResolutionSliderView: View {
                     } else {
                         Spacer()
                     }
-                    Text("En düşük")
+                    Text(L("En düşük", "Lowest"))
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
@@ -131,7 +131,7 @@ struct ResolutionSliderView: View {
                 errorMessage = nil
             } else {
                 syncSliderToCurrentMode()
-                errorMessage = "Geçiş başarısız, tekrar deneyin"
+                errorMessage = L("Geçiş başarısız, tekrar deneyin", "Switch failed, please try again")
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
                     errorMessage = nil

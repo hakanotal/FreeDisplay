@@ -58,7 +58,8 @@ final class BrightnessHUDService: @unchecked Sendable {
         conn.invalidationHandler = { NSLog("[BrightnessHUD] XPC connection invalidated") }
         conn.resume()
 
-        let proxy = conn.remoteObjectProxyWithErrorHandler { error in
+        // @Sendable: XPC calls this on its own queue; an implicitly main-isolated closure would trap.
+        let proxy = conn.remoteObjectProxyWithErrorHandler { @Sendable error in
             NSLog("[BrightnessHUD] XPC error: %@", error.localizedDescription)
         }
 

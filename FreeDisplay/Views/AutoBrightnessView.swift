@@ -16,7 +16,7 @@ struct AutoBrightnessView: View {
             HStack {
                 MenuItemIcon(systemName: "sun.max.trianglebadge.exclamationmark", color: service.isEnabled ? .orange : .secondary)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Otomatik Parlaklık")
+                    Text(L("Otomatik Parlaklık", "Auto Brightness"))
                         .font(.body)
                     Text(statusText)
                         .font(.caption2)
@@ -39,11 +39,11 @@ struct AutoBrightnessView: View {
 
     private var statusText: String {
         if builtinUnavailable {
-            return "Dahili ekran algılanmadı"
+            return L("Dahili ekran algılanmadı", "No built-in display detected")
         } else if service.isEnabled {
-            return "Dahili ekran parlaklığıyla eşitleniyor"
+            return L("Dahili ekran parlaklığıyla eşitleniyor", "Syncing with built-in display brightness")
         } else {
-            return "Harici ekranları dahili ekran parlaklığına göre ayarla"
+            return L("Harici ekranları dahili ekran parlaklığına göre ayarla", "Adjust external displays to follow built-in brightness")
         }
     }
 }

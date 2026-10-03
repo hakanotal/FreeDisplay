@@ -55,10 +55,10 @@ struct ExpandableRow: View {
             }
         }
         .onHover { isHovered = $0 }
-        .accessibilityLabel(isExpanded ? "\(label), genişletildi" : "\(label), daraltıldı")
-        .accessibilityHint("Bu bölümü genişletmek veya daraltmak için tıklayın")
+        .accessibilityLabel(isExpanded ? L("\(label), genişletildi", "\(label), expanded") : L("\(label), daraltıldı", "\(label), collapsed"))
+        .accessibilityHint(L("Bu bölümü genişletmek veya daraltmak için tıklayın", "Click to expand or collapse this section"))
         .accessibilityAddTraits(.isButton)
-        .help("Bu bölümü genişletmek veya daraltmak için tıklayın")
+        .help(L("Bu bölümü genişletmek veya daraltmak için tıklayın", "Click to expand or collapse this section"))
     }
 }
 
@@ -73,6 +73,7 @@ struct MenuBarView: View {
     @State private var showAutoBrightness: Bool = false
     @State private var showSettings: Bool = false
     @State private var quitHovered = false
+    @State private var contentHeight: CGFloat = 0
 
     private var visibleDisplays: [DisplayInfo] {
         displayManager.displays.filter { !virtualDisplayService.isVirtualDisplay($0.displayID) }
@@ -119,7 +120,7 @@ struct MenuBarView: View {
                     ExpandableRow(
                         icon: "rectangle.3.offgrid",
                         iconColor: .blue,
-                        label: "Ekranları Düzenle",
+                        label: L("Ekranları Düzenle", "Arrange Displays"),
                         isExpanded: $showArrangement
                     )
 
@@ -143,7 +144,7 @@ struct MenuBarView: View {
                 }
 
                 // 工具区标题
-                Text("Araçlar")
+                Text(L("Araçlar", "Tools"))
                     .font(.caption2)
                     .fontWeight(.semibold)
                     .foregroundColor(.secondary)
@@ -155,7 +156,7 @@ struct MenuBarView: View {
                 ExpandableRow(
                     icon: "display.2",
                     iconColor: .blue,
-                    label: "Sanal Ekranlar",
+                    label: L("Sanal Ekranlar", "Virtual Displays"),
                     isExpanded: $showVirtualDisplays
                 )
 
@@ -169,7 +170,7 @@ struct MenuBarView: View {
                 ExpandableRow(
                     icon: "sun.and.horizon.fill",
                     iconColor: .orange,
-                    label: "Otomatik Parlaklık",
+                    label: L("Otomatik Parlaklık", "Auto Brightness"),
                     isExpanded: $showAutoBrightness
                 )
 
@@ -187,7 +188,7 @@ struct MenuBarView: View {
                 ExpandableRow(
                     icon: "gearshape.fill",
                     iconColor: .gray,
-                    label: "Ayarlar",
+                    label: L("Ayarlar", "Settings"),
                     isExpanded: $showSettings
                 )
 
@@ -208,15 +209,15 @@ struct MenuBarView: View {
                             .foregroundColor(.green)
                             .frame(width: 20)
                             .accessibilityHidden(true)
-                        Text("Yeni sürüm v\(ver) mevcut")
+                        Text(L("Yeni sürüm v\(ver) mevcut", "New version v\(ver) available"))
                             .font(.caption)
                             .foregroundColor(.green)
                         Spacer()
-                        Button("Görüntüle") { updateService.openReleasePage() }
+                        Button(L("Görüntüle", "View")) { updateService.openReleasePage() }
                             .buttonStyle(.plain)
                             .font(.caption)
                             .foregroundColor(.blue)
-                            .help("En son sürümü indirip yükleyin")
+                            .help(L("En son sürümü indirip yükleyin", "Download and install the latest version"))
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 5)
@@ -226,7 +227,12 @@ struct MenuBarView: View {
                 }
 
             }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
         }
+        // macOS 27 sizes the MenuBarExtra window to the content's minimum size, and a bare
+        // ScrollView's minimum height is 0 (only the footer would show). Pin the ScrollView
+        // to the measured content height, capped so long content still scrolls.
+        .frame(height: min(contentHeight, 640))
 
         Divider().opacity(0.3)
 
@@ -243,7 +249,7 @@ struct MenuBarView: View {
                 HStack(spacing: 3) {
                     Image(systemName: "xmark")
                         .accessibilityHidden(true)
-                    Text("Çıkış")
+                    Text(L("Çıkış", "Quit"))
                 }
                 .font(.body)
                 .padding(.horizontal, 8)
@@ -255,7 +261,7 @@ struct MenuBarView: View {
             .buttonStyle(.plain)
             .foregroundColor(quitHovered ? .red : .secondary)
             .onHover { quitHovered = $0 }
-            .help("FreeDisplay'den çık")
+            .help(L("FreeDisplay'den çık", "Quit FreeDisplay"))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -264,6 +270,7 @@ struct MenuBarView: View {
         .frame(width: 340)
         .frame(maxHeight: 700)
         .padding(.vertical, 8)
+        .topResizeAnchor()
         .onReceive(displayManager.$displays) { newDisplays in
             let validIDs = Set(newDisplays.map { $0.displayID })
             expandedDisplayIDs = expandedDisplayIDs.intersection(validIDs)
@@ -276,13 +283,50 @@ struct MenuBarView: View {
     }
 }
 
+private extension View {
+    /// Keeps the panel pinned under the menu bar while it grows/shrinks (macOS 26+).
+    @ViewBuilder func topResizeAnchor() -> some View {
+        if #available(macOS 26.0, *) {
+            windowResizeAnchor(.top)
+        } else {
+            self
+        }
+    }
+}
+
 // MARK: - SettingsView (Phase 12: embedded in MenuBarView)
 
 struct SettingsView: View {
     @ObservedObject private var settings = SettingsService.shared
+    @EnvironmentObject var displayManager: DisplayManager
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            // Dil / Language
+            HStack(spacing: 6) {
+                MenuItemIcon(systemName: "globe", color: .indigo)
+                    .accessibilityHidden(true)
+                Text(L("Dil", "Language"))
+                    .font(.body)
+                Spacer(minLength: 8)
+                Picker("", selection: Binding(
+                    get: { LanguageStore.shared.language },
+                    set: { newValue in
+                        LanguageStore.shared.language = newValue
+                        displayManager.relocalizeDisplayNames()
+                    }
+                )) {
+                    Text(verbatim: "Türkçe").tag(AppLanguage.tr)
+                    Text(verbatim: "English").tag(AppLanguage.en)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .fixedSize()
+            }
+            .padding(.horizontal, 12)
+            .help(L("Arayüz dili", "Interface language"))
+
             // 开机自启动
             Toggle(isOn: Binding(
                 get: { settings.launchAtLogin },
@@ -298,14 +342,15 @@ struct SettingsView: View {
                 HStack(spacing: 6) {
                     MenuItemIcon(systemName: "power", color: .green)
                         .accessibilityHidden(true)
-                    Text("Girişte otomatik başlat")
+                    Text(L("Girişte otomatik başlat", "Launch at login"))
                         .font(.body)
+                    Spacer(minLength: 8)
                 }
             }
             .toggleStyle(.switch)
             .controlSize(.small)
             .padding(.horizontal, 12)
-            .help("Oturum açıldığında FreeDisplay'i otomatik başlat")
+            .help(L("Oturum açıldığında FreeDisplay'i otomatik başlat", "Start FreeDisplay automatically at login"))
 
             // 首次启动提示：建议开启开机自启
             if !settings.launchAtLoginPrompted {
@@ -314,11 +359,11 @@ struct SettingsView: View {
                         .foregroundColor(.secondary)
                         .frame(width: 16)
                         .accessibilityHidden(true)
-                    Text("Girişte otomatik başlatma önerilir")
+                    Text(L("Girişte otomatik başlatma önerilir", "Launch at login is recommended"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Spacer()
-                    Button("Anladım") {
+                    Button(L("Anladım", "Got it")) {
                         settings.launchAtLoginPrompted = true
                     }
                     .buttonStyle(.borderless)
@@ -337,51 +382,30 @@ struct SettingsView: View {
                 HStack(spacing: 6) {
                     MenuItemIcon(systemName: "sun.min.fill", color: .yellow)
                         .accessibilityHidden(true)
-                    Text("Birleşik parlaklığı göster")
+                    Text(L("Birleşik parlaklığı göster", "Show combined brightness"))
                         .font(.body)
+                    Spacer(minLength: 8)
                 }
             }
             .toggleStyle(.switch)
             .controlSize(.small)
             .padding(.horizontal, 12)
-            .help("Menüde tüm ekranlar için tek bir parlaklık kaydırıcısı göster")
+            .help(L("Menüde tüm ekranlar için tek bir parlaklık kaydırıcısı göster", "Show a single brightness slider for all displays in the menu"))
 
             // 启动时检查更新
             Toggle(isOn: $settings.checkUpdatesOnLaunch) {
                 HStack(spacing: 6) {
                     MenuItemIcon(systemName: "arrow.clockwise.circle", color: .blue)
                         .accessibilityHidden(true)
-                    Text("Açılışta güncellemeleri denetle")
+                    Text(L("Açılışta güncellemeleri denetle", "Check for updates on launch"))
                         .font(.body)
+                    Spacer(minLength: 8)
                 }
             }
             .toggleStyle(.switch)
             .controlSize(.small)
             .padding(.horizontal, 12)
-            .help("Her açılışta yeni sürüm olup olmadığını otomatik denetle")
-
-            // Türkçe çeviri katkısı
-            Button {
-                if let url = URL(string: "https://github.com/hakanotal") {
-                    NSWorkspace.shared.open(url)
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "globe")
-                        .foregroundColor(.secondary)
-                        .frame(width: 16)
-                        .accessibilityHidden(true)
-                    Text("Türkçe çeviri: @hakanotal")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Spacer()
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 12)
-            .padding(.top, 2)
-            .help("github.com/hakanotal adresini aç")
+            .help(L("Her açılışta yeni sürüm olup olmadığını otomatik denetle", "Automatically check for a new version on every launch"))
         }
         .padding(.vertical, 6)
     }
@@ -421,7 +445,7 @@ struct DisplayRowView: View {
                     }
                 }
                 if display.isMain {
-                    Text("Ana")
+                    Text(L("Ana", "Main"))
                         .font(.caption2)
                         .foregroundColor(.blue)
                         .padding(.horizontal, 4)
@@ -433,7 +457,7 @@ struct DisplayRowView: View {
             }
             .contentShape(Rectangle())
             .onTapGesture { onToggleExpand() }
-            .help("Ekran kontrol panelini genişlet")
+            .help(L("Ekran kontrol panelini genişlet", "Expand display controls"))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -446,7 +470,7 @@ struct DisplayRowView: View {
                     NSWorkspace.shared.open(url)
                 }
             } label: {
-                Label("Sistem Ayarları'nda Aç", systemImage: "display")
+                Label(L("Sistem Ayarları'nda Aç", "Open in System Settings"), systemImage: "display")
             }
 
             Divider()
@@ -455,11 +479,11 @@ struct DisplayRowView: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(display.name, forType: .string)
             } label: {
-                Label("Ekran Adını Kopyala", systemImage: "doc.on.doc")
+                Label(L("Ekran Adını Kopyala", "Copy Display Name"), systemImage: "doc.on.doc")
             }
         }
-        .accessibilityLabel("Ekran: \(display.name)\(display.isMain ? ", ana ekran" : "")\(isExpanded ? ", genişletildi" : ", daraltıldı")")
-        .accessibilityHint("Kontrol panelini genişletmek için tıklayın")
+        .accessibilityLabel(L("Ekran: \(display.name)\(display.isMain ? ", ana ekran" : "")\(isExpanded ? ", genişletildi" : ", daraltıldı")", "Display: \(display.name)\(display.isMain ? ", main display" : "")\(isExpanded ? ", expanded" : ", collapsed")"))
+        .accessibilityHint(L("Kontrol panelini genişletmek için tıklayın", "Click to expand the control panel"))
         .accessibilityAddTraits(.isButton)
     }
 }

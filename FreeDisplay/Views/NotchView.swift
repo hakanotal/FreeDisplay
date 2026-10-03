@@ -25,7 +25,7 @@ struct NotchView: View {
                 // Info row
                 HStack {
                     MenuItemIcon(systemName: "camera.aperture", color: .blue)
-                    Text("Çentik")
+                    Text(L("Çentik", "Notch"))
                         .font(.body)
                     Text(String(format: "%.0f pt", notchHeight))
                         .font(.caption)
@@ -38,7 +38,7 @@ struct NotchView: View {
                 // Hide/show toggle
                 HStack {
                     MenuItemIcon(systemName: isHidingNotch ? "eye.slash" : "eye", color: .secondary)
-                    Text("Çentik alanını gizle")
+                    Text(L("Çentik alanını gizle", "Hide notch area"))
                         .font(.body)
                     Spacer()
                     Toggle("", isOn: $isHidingNotch)
@@ -52,7 +52,7 @@ struct NotchView: View {
                                 NotchOverlayManager.shared.hideOverlay(for: display.displayID)
                             }
                         }
-                        .help("Çentiği gizlemek için menü çubuğu alanında siyah bir maske göster")
+                        .help(L("Çentiği gizlemek için menü çubuğu alanında siyah bir maske göster", "Show a black mask in the menu bar area to hide the notch"))
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 7)

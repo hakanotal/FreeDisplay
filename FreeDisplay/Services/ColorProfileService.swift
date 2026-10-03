@@ -122,17 +122,25 @@ final class ColorProfileService: @unchecked Sendable {
     /// Returns the human-readable color space name for the given display.
     func currentColorSpaceName(for displayID: CGDirectDisplayID) -> String {
         let colorSpace = CGDisplayCopyColorSpace(displayID)
-        guard let cfName = colorSpace.name else { return "Bilinmiyor" }
+        // Prefer the active ICC profile's description: display-specific profiles
+        // (e.g. EDID-generated "GF270M") have no CGColorSpace name, and this matches
+        // the names shown in the profile list.
+        if let data = colorSpace.copyICCData(),
+           let profile = ColorSyncProfileCreate(data, nil)?.takeRetainedValue(),
+           let desc = ColorSyncProfileCopyDescriptionString(profile)?.takeRetainedValue() {
+            return desc as String
+        }
+        guard let cfName = colorSpace.name else { return L("Bilinmiyor", "Unknown") }
         return humanReadable(cfName as String)
     }
 
     /// Returns a description like "Dahili (8-bit)" for the display's current color mode.
     func colorModeDescription(for displayID: CGDirectDisplayID) -> String {
-        guard let mode = CGDisplayCopyDisplayMode(displayID) else { return "Bilinmiyor" }
+        guard let mode = CGDisplayCopyDisplayMode(displayID) else { return L("Bilinmiyor", "Unknown") }
         let encoding: String
         if let cfEnc = mode.pixelEncoding { encoding = cfEnc as String } else { encoding = "" }
         let bpc = bitsPerChannel(from: encoding)
-        let source = CGDisplayIsBuiltin(displayID) != 0 ? "Dahili" : "Harici"
+        let source = CGDisplayIsBuiltin(displayID) != 0 ? L("Dahili", "Internal") : L("Harici", "External")
         return "\(source) (\(bpc)-bit)"
     }
 

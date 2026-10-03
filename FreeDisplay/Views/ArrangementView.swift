@@ -50,7 +50,7 @@ struct ArrangementView: View {
                         if ok { displayManager.refreshDisplays() }
                     }
                 }) {
-                    Label("Ana ekran yap: \(display.name)", systemImage: "star.fill")
+                    Label(L("Ana ekran yap: \(display.name)", "Set as main display: \(display.name)"), systemImage: "star.fill")
                         .font(.caption)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
@@ -59,7 +59,7 @@ struct ArrangementView: View {
                         .cornerRadius(6)
                 }
                 .buttonStyle(.plain)
-                .help("Bu ekranı ana ekran yap")
+                .help(L("Bu ekranı ana ekran yap", "Make this the main display"))
             }
         }
         .padding(.horizontal, 8)
@@ -78,7 +78,7 @@ struct ArrangementView: View {
                     x: rect.midX + (isDragged ? dragOffset.width : 0),
                     y: rect.midY + (isDragged ? dragOffset.height : 0)
                 )
-                .help("Ekran: \(display.name)")
+                .help(L("Ekran: \(display.name)", "Display: \(display.name)"))
                 .gesture(
                     DragGesture()
                         .onChanged { value in
@@ -163,7 +163,7 @@ struct ArrangementView: View {
                 displayManager.refreshDisplays()
             } else {
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    dragError = "Ekranlar düzenlenemedi, tekrar deneyin"
+                    dragError = L("Ekranlar düzenlenemedi, tekrar deneyin", "Couldn't arrange displays, please try again")
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                     withAnimation { self.dragError = nil }
@@ -221,7 +221,7 @@ private struct DisplayThumbnailView: View {
                     HStack(spacing: 2) {
                         Image(systemName: "star.fill")
                             .font(.system(size: 5))
-                        Text("Ana")
+                        Text(L("Ana", "Main"))
                             .font(.system(size: 6))
                     }
                     .foregroundColor(display.isBuiltin ? .white.opacity(0.9) : .blue)

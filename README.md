@@ -6,7 +6,17 @@ BetterDisplay is a great app, but its best features are locked behind a paid Pro
 
 [Download Latest Release](https://github.com/huberdf/FreeDisplay/releases/latest) | [Report an Issue](https://github.com/huberdf/FreeDisplay/issues)
 
-> 🇹🇷 **Turkish edition** — this fork's entire interface is translated into Turkish (arayüz tamamen Türkçe) by [@hakanotal](https://github.com/hakanotal).
+> 🇹🇷 **Turkish edition** — maintained by [@hakanotal](https://github.com/hakanotal).
+
+---
+
+## What's Changed in This Fork
+
+- **Turkish + English UI** — full Turkish translation; switch languages live in Settings → Dil / Language
+- **macOS 27 fixes** — menu no longer collapses to just the footer, and it shrinks back when sections collapse
+- **Crash fix** — no more crashes when changing brightness or applying presets (Swift 6 threading bug)
+- **Color profile** — shows the active profile (e.g. your monitor's own) instead of "Unknown", and updates live
+- **Cleaner menu** — removed the built-in "Native Mode" / "HiDPI Mode" preset buttons; settings switches right-aligned
 
 ---
 

@@ -18,14 +18,14 @@ struct ColorProfileView: View {
                     ProgressView()
                         .scaleEffect(0.65)
                         .frame(width: 14, height: 14)
-                    Text("Profiller yükleniyor…")
+                    Text(L("Profiller yükleniyor…", "Loading profiles…"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
             } else if profiles.isEmpty {
-                Text("Profil bulunamadı")
+                Text(L("Profil bulunamadı", "No profiles found"))
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .padding(.horizontal, 12)
@@ -36,7 +36,7 @@ struct ColorProfileView: View {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundColor(.green)
                             .font(.caption)
-                        Text("Uygulandı")
+                        Text(L("Uygulandı", "Applied"))
                             .font(.caption)
                             .foregroundColor(.green)
                     }
@@ -56,7 +56,7 @@ struct ColorProfileView: View {
                 let rest = otherProfiles
 
                 if !recommended.isEmpty {
-                    SectionBadge(title: "Önerilen")
+                    SectionBadge(title: L("Önerilen", "Recommended"))
                     ForEach(recommended) { profile in
                         ProfileRow(
                             profile: profile,
@@ -65,12 +65,12 @@ struct ColorProfileView: View {
                             isDisabled: applyingPath != nil,
                             onTap: { applyProfile(profile) }
                         )
-                        .help("Bu renk profiline geç")
+                        .help(L("Bu renk profiline geç", "Switch to this color profile"))
                     }
                 }
 
                 if !rest.isEmpty {
-                    SectionBadge(title: "Tüm Profiller")
+                    SectionBadge(title: L("Tüm Profiller", "All Profiles"))
                     ForEach(rest) { profile in
                         ProfileRow(
                             profile: profile,
@@ -79,7 +79,7 @@ struct ColorProfileView: View {
                             isDisabled: applyingPath != nil,
                             onTap: { applyProfile(profile) }
                         )
-                        .help("Bu renk profiline geç")
+                        .help(L("Bu renk profiline geç", "Switch to this color profile"))
                     }
                 }
             }
@@ -132,7 +132,7 @@ struct ColorProfileView: View {
                     applySuccess = false
                 }
             } else {
-                applyError = "Uygulanamadı, tekrar deneyin"
+                applyError = L("Uygulanamadı, tekrar deneyin", "Couldn't apply, please try again")
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
                     applyError = nil

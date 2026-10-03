@@ -85,7 +85,7 @@ struct MenuBarView: View {
         VStack(spacing: 0) {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 0) {
-                // 显示器列表
+                // Display list
                 ForEach(visibleDisplays) { display in
                     VStack(spacing: 0) {
                         DisplayRowView(
@@ -106,14 +106,14 @@ struct MenuBarView: View {
                     }
                 }
 
-                // 预设列表 (Phase 19)
+                // Preset list
                 Divider()
                     .opacity(0.3)
                     .padding(.vertical, 2)
 
                 PresetListView()
 
-                // 排列显示器 section (Phase 4)
+                // Display arrangement section
                 if visibleDisplays.count > 1 {
                     Divider()
                         .opacity(0.3)
@@ -137,7 +137,7 @@ struct MenuBarView: View {
                     .opacity(0.3)
                     .padding(.vertical, 2)
 
-                // 组合亮度控制（Phase 2）
+                // Combined brightness control
                 if settings.showCombinedBrightness {
                     CombinedBrightnessView(displays: displayManager.displays)
                     Divider()
@@ -145,7 +145,7 @@ struct MenuBarView: View {
                         .padding(.vertical, 2)
                 }
 
-                // 工具区标题
+                // Tools section header
                 Text(L("Araçlar", "Tools"))
                     .font(.caption2)
                     .fontWeight(.semibold)
@@ -154,7 +154,7 @@ struct MenuBarView: View {
                     .padding(.top, 8)
                     .padding(.bottom, 2)
 
-                // 虚拟显示器工具入口 (Phase 10)
+                // Virtual display tool entry
                 ExpandableRow(
                     icon: "display.2",
                     iconColor: .blue,
@@ -168,7 +168,7 @@ struct MenuBarView: View {
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
 
-                // 自动亮度入口 (Phase 11)
+                // Auto brightness entry
                 ExpandableRow(
                     icon: "sun.and.horizon.fill",
                     iconColor: .orange,
@@ -201,7 +201,7 @@ struct MenuBarView: View {
                     .opacity(0.3)
                     .padding(.vertical, 2)
 
-                // 设置区 (Phase 12)
+                // Settings section
                 ExpandableRow(
                     icon: "gearshape.fill",
                     iconColor: .gray,
@@ -219,7 +219,7 @@ struct MenuBarView: View {
                     .opacity(0.3)
                     .padding(.vertical, 2)
 
-                // 更新提示 (Phase 12)
+                // Update notice
                 if updateService.hasUpdate, let ver = updateService.latestVersion {
                     HStack {
                         Image(systemName: "arrow.down.circle.fill")
@@ -253,7 +253,7 @@ struct MenuBarView: View {
 
         Divider().opacity(0.3)
 
-        // 版本号与退出（固定在底部，不随内容滚动）
+        // Version and Quit (pinned to the bottom, does not scroll with content)
         HStack {
             Text("FreeDisplay v\(updateService.currentVersion)")
                 .font(.caption)
@@ -284,8 +284,9 @@ struct MenuBarView: View {
         .padding(.vertical, 6)
 
         } // end VStack
+        // No flexible maxHeight frame here: it let the panel stay taller than its content
+        // (content centered with gaps). Height is capped by the ScrollView frame above.
         .frame(width: 340)
-        .frame(maxHeight: 700)
         .padding(.vertical, 8)
         .topResizeAnchor()
         .onReceive(displayManager.$displays) { newDisplays in
@@ -311,7 +312,7 @@ private extension View {
     }
 }
 
-// MARK: - SettingsView (Phase 12: embedded in MenuBarView)
+// MARK: - SettingsView (embedded in MenuBarView)
 
 struct SettingsView: View {
     @ObservedObject private var settings = SettingsService.shared
@@ -344,7 +345,7 @@ struct SettingsView: View {
             .padding(.horizontal, 12)
             .help(L("Arayüz dili", "Interface language"))
 
-            // 开机自启动
+            // Launch at login
             Toggle(isOn: Binding(
                 get: { settings.launchAtLogin },
                 set: { newValue in
@@ -369,7 +370,7 @@ struct SettingsView: View {
             .padding(.horizontal, 12)
             .help(L("Oturum açıldığında FreeDisplay'i otomatik başlat", "Start FreeDisplay automatically at login"))
 
-            // 首次启动提示：建议开启开机自启
+            // First-launch hint: suggest enabling launch at login
             if !settings.launchAtLoginPrompted {
                 HStack(spacing: 6) {
                     Image(systemName: "info.circle")
@@ -394,7 +395,7 @@ struct SettingsView: View {
                 }
             }
 
-            // 显示组合亮度
+            // Show combined brightness
             Toggle(isOn: $settings.showCombinedBrightness) {
                 HStack(spacing: 6) {
                     MenuItemIcon(systemName: "sun.min.fill", color: .yellow)
@@ -409,7 +410,7 @@ struct SettingsView: View {
             .padding(.horizontal, 12)
             .help(L("Menüde tüm ekranlar için tek bir parlaklık kaydırıcısı göster", "Show a single brightness slider for all displays in the menu"))
 
-            // 启动时检查更新
+            // Check for updates on launch
             Toggle(isOn: $settings.checkUpdatesOnLaunch) {
                 HStack(spacing: 6) {
                     MenuItemIcon(systemName: "arrow.clockwise.circle", color: .blue)

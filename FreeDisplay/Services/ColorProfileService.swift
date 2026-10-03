@@ -78,43 +78,45 @@ final class ColorProfileService: @unchecked Sendable {
     }
 
     private static func makeProfileImpl(from url: URL) -> ICCProfile? {
-        let name: String
-        let csType: String
+        guard let rawProfile = ColorSyncProfileCreateWithURL(url as CFURL, nil) else { return nil }
+        let profile = rawProfile.takeRetainedValue()
 
-        if let rawProfile = ColorSyncProfileCreateWithURL(url as CFURL, nil) {
-            let profile = rawProfile.takeRetainedValue()
-            if let rawDesc = ColorSyncProfileCopyDescriptionString(profile) {
-                name = rawDesc.takeRetainedValue() as String
-            } else {
-                name = url.deletingPathExtension().lastPathComponent
-            }
-            csType = colorSpaceType(from: profile)
+        // Only RGB display-class profiles can be assigned to a display. Applying a CMYK, gray,
+        // Lab/XYZ, abstract or named-color profile makes WindowServer's color space registry
+        // abort the app (assertion in SkyLight), so those are not offered.
+        guard headerTag(profile, offset: 12) == "mntr",
+              headerTag(profile, offset: 16) == "RGB " else { return nil }
+
+        let name: String
+        if let rawDesc = ColorSyncProfileCopyDescriptionString(profile) {
+            name = rawDesc.takeRetainedValue() as String
         } else {
             name = url.deletingPathExtension().lastPathComponent
-            csType = "RGB"
         }
-
-        return ICCProfile(name: name, path: url, colorSpaceType: csType)
+        return ICCProfile(name: name, path: url, colorSpaceType: colorSpaceType(from: profile))
     }
 
     private static func colorSpaceType(from profile: ColorSyncProfile) -> String {
-        guard let rawData = ColorSyncProfileCopyHeader(profile) else { return "RGB" }
-        let data = rawData.takeRetainedValue() as Data
-        // ICC header: data color space at byte offset 16, 4 bytes (ASCII-encoded tag).
-        guard data.count >= 20 else { return "RGB" }
-        let bytes = [UInt8](data[16..<20])
-        // Validate that all bytes are printable ASCII (0x20–0x7E) before decoding.
-        // Non-ASCII bytes indicate a corrupt or non-standard header; fall back to "RGB".
-        guard bytes.allSatisfy({ $0 >= 0x20 && $0 <= 0x7E }),
-              let str = String(bytes: bytes, encoding: .ascii) else { return "RGB" }
-        switch str.trimmingCharacters(in: .whitespaces) {
+        switch headerTag(profile, offset: 16)?.trimmingCharacters(in: .whitespaces) {
         case "RGB":  return "RGB"
         case "CMYK": return "CMYK"
         case "GRAY": return "Gray"
-        case "LAB":  return "Lab"
+        case "Lab":  return "Lab"
         case "XYZ":  return "XYZ"
         default:     return "RGB"
         }
+    }
+
+    /// Reads a 4-character signature from the ICC header (offset 12 = device class,
+    /// 16 = data color space). Uses the raw big-endian profile bytes:
+    /// ColorSyncProfileCopyHeader returns fields byte-swapped to host order ("BGR " for RGB).
+    private static func headerTag(_ profile: ColorSyncProfile, offset: Int) -> String? {
+        guard let raw = ColorSyncProfileCopyData(profile, nil)?.takeRetainedValue() as Data?,
+              raw.count >= offset + 4 else { return nil }
+        let bytes = [UInt8](raw[raw.startIndex + offset ..< raw.startIndex + offset + 4])
+        // Non-printable bytes mean a corrupt or non-standard header.
+        guard bytes.allSatisfy({ $0 >= 0x20 && $0 <= 0x7E }) else { return nil }
+        return String(bytes: bytes, encoding: .ascii)
     }
 
     // MARK: - Current Color Info

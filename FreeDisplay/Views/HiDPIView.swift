@@ -16,8 +16,8 @@ struct HiDPIRowView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(L("HiDPI Modu", "HiDPI Mode"))
                         .font(.body)
-                    if !isHiDPIOn {
-                        Text(L("Yönetici izni gerekir", "Requires administrator permission"))
+                    if HiDPIService.shared.requiresAdmin(vendor: display.vendorNumber) {
+                        Text(L("Yönetici izni gerekir (bir kez)", "Requires administrator permission (once)"))
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }

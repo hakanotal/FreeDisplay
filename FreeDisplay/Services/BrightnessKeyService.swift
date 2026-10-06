@@ -197,6 +197,14 @@ final class BrightnessKeyService: @unchecked Sendable {
 
         // Cursor is on an external display — schedule brightness adjustment and consume.
         let displayID = screenNumber
+
+        // Only take over displays FreeDisplay can dim. Others (Sidecar, AirPlay, our own
+        // virtual displays) keep the system behaviour instead of the key doing nothing.
+        let isManaged = MainActor.assumeIsolated {
+            DisplayManagerAccessor.shared.displays.contains { $0.displayID == displayID }
+                && !VirtualDisplayService.shared.isVirtualDisplay(displayID)
+        }
+        guard isManaged else { return Unmanaged.passUnretained(event) }
         let step = (keyCode == Self.nxKeytypeBrightnessUp) ? Self.brightnessStep : -Self.brightnessStep
 
         // All data captured here is Sendable (CGDirectDisplayID = UInt32, Double).

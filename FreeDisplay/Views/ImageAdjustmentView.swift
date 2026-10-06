@@ -82,11 +82,7 @@ struct ImageAdjustmentView: View {
                     isActive: isPaused
                 ) {
                     isPaused.toggle()
-                    if isPaused {
-                        GammaService.shared.applyIdentity(for: display.displayID)
-                    } else {
-                        commitAdjustment()
-                    }
+                    commitAdjustment()
                 }
                 .help(L("Renk ayarlarını geçici olarak devre dışı bırak, orijinal görüntüye dön", "Temporarily disable color adjustments and restore the original image"))
 
@@ -103,40 +99,17 @@ struct ImageAdjustmentView: View {
             .padding(.bottom, 8)
         }
         .onAppear {
-            if let saved = GammaService.shared.loadSavedState(for: display.displayID) {
-                contrast = saved.contrast
-                gammaVal = saved.gammaVal
-                gain = saved.gain
-                colorTemperature = saved.colorTemperature
-                rGamma = saved.rGamma; gGamma = saved.gGamma; bGamma = saved.bGamma
-                rGain = saved.rGain;   gGain = saved.gGain;   bGain = saved.bGain
-                quantLevels = Double(saved.quantizationLevels)
-                isInverted = saved.isInverted
-                isPaused = saved.isPaused
-                // Re-apply visually so the display matches the saved state immediately.
-                if !saved.isPaused {
-                    GammaService.shared.apply(saved, for: display.displayID)
-                }
-            }
-        }
-        .onDisappear {
-            let isAtZero = contrast == 0 && gammaVal == 0 && gain == 0 &&
-                colorTemperature == 0 && rGamma == 0 && gGamma == 0 && bGamma == 0 &&
-                rGain == 0 && gGain == 0 && bGain == 0 && !isInverted &&
-                quantLevels == 256
-            if isAtZero {
-                GammaService.shared.clearSavedState(for: display.displayID)
-                GammaService.shared.resetSingleDisplay(display.displayID)
-            } else {
-                let adj = GammaAdjustment(
-                    contrast: contrast, gammaVal: gammaVal, gain: gain,
-                    colorTemperature: colorTemperature,
-                    rGamma: rGamma, gGamma: gGamma, bGamma: bGamma,
-                    rGain: rGain, gGain: gGain, bGain: bGain,
-                    quantizationLevels: Int(quantLevels),
-                    isInverted: isInverted, isPaused: isPaused
-                )
-                GammaService.shared.saveState(adj, for: display.displayID)
+            // The live adjustment is already applied; only mirror it in the sliders.
+            if let current = GammaService.shared.currentAdjustment(for: display.displayID) {
+                contrast = current.contrast
+                gammaVal = current.gammaVal
+                gain = current.gain
+                colorTemperature = current.colorTemperature
+                rGamma = current.rGamma; gGamma = current.gGamma; bGamma = current.bGamma
+                rGain = current.rGain;   gGain = current.gGain;   bGain = current.bGain
+                quantLevels = Double(current.quantizationLevels)
+                isInverted = current.isInverted
+                isPaused = current.isPaused
             }
         }
     }
@@ -170,7 +143,7 @@ struct ImageAdjustmentView: View {
             }
             .help(L("Niceleme düzeyini ayarla", "Adjust quantization level"))
 
-            Text(quantLevels >= 255 ? "∞" : "\(Int(quantLevels))")
+            Text(quantLevels >= 256 ? "∞" : "\(Int(quantLevels))")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .frame(width: 38, alignment: .trailing)
@@ -206,8 +179,9 @@ struct ImageAdjustmentView: View {
 
     // MARK: - Helpers
 
+    /// Applies and saves the current slider state (GammaService persists every change, so
+    /// nothing is lost when the panel closes or the app quits).
     private func commitAdjustment() {
-        guard !isPaused else { return }
         let adj = GammaAdjustment(
             contrast: contrast,
             gammaVal: gammaVal,
@@ -217,7 +191,7 @@ struct ImageAdjustmentView: View {
             rGain: rGain,   gGain: gGain,   bGain: bGain,
             quantizationLevels: Int(quantLevels),
             isInverted: isInverted,
-            isPaused: false
+            isPaused: isPaused
         )
         GammaService.shared.apply(adj, for: display.displayID)
     }
@@ -230,7 +204,6 @@ struct ImageAdjustmentView: View {
         quantLevels = 256
         isInverted = false
         isPaused = false
-        GammaService.shared.clearSavedState(for: display.displayID)
         GammaService.shared.resetSingleDisplay(display.displayID)
     }
 }

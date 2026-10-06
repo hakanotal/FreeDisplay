@@ -14,45 +14,32 @@ final class HiDPIService: @unchecked Sendable {
     // MARK: - Public API
 
     /// Checks whether HiDPI is enabled for the given display via plist override.
-    func isHiDPIEnabled(for displayID: CGDirectDisplayID, vendor: UInt32, product: UInt32) -> Bool {
+    func isHiDPIEnabled(vendor: UInt32, product: UInt32) -> Bool {
         FileManager.default.fileExists(atPath: overridePlistURL(vendor: vendor, product: product).path)
     }
 
-    /// Checks whether HiDPI is enabled for the given display via plist override only.
-    func isHiDPIEnabled(vendor: UInt32, product: UInt32) -> Bool {
-        let plistURL = overridePlistURL(vendor: vendor, product: product)
-        return FileManager.default.fileExists(atPath: plistURL.path)
-    }
-
-    /// Enables HiDPI for an external display via plist override.
-    /// Requires display reconnect (or reboot) to apply.
-    ///
+    /// Enables HiDPI for an external display via plist override and clears any opt-out.
+    /// macOS picks up the new modes when the display is reconnected.
     /// Returns nil on success, or an error string on failure.
-    func enableHiDPI(for displayID: CGDirectDisplayID,
-                     vendor: UInt32,
-                     product: UInt32,
-                     nativeWidth: Int,
-                     nativeHeight: Int) async -> String? {
-        return enableHiDPIPlist(vendor: vendor, product: product,
-                                nativeWidth: nativeWidth, nativeHeight: nativeHeight)
-    }
-
-    /// Legacy single-path enable (plist only).
     func enableHiDPI(vendor: UInt32, product: UInt32, nativeWidth: Int, nativeHeight: Int) -> String? {
-        enableHiDPIPlist(vendor: vendor, product: product,
-                         nativeWidth: nativeWidth, nativeHeight: nativeHeight)
+        let err = enableHiDPIPlist(vendor: vendor, product: product,
+                                   nativeWidth: nativeWidth, nativeHeight: nativeHeight)
+        if err == nil { setOptedOut(false, vendor: vendor, product: product) }
+        return err
     }
 
-    /// Disables HiDPI for an external display by removing the plist override.
-    func disableHiDPI(for displayID: CGDirectDisplayID,
-                      vendor: UInt32,
-                      product: UInt32) -> String? {
-        return disableHiDPIPlist(vendor: vendor, product: product)
-    }
-
-    /// Legacy single-path disable (plist only).
+    /// Disables HiDPI for an external display by removing the plist override, and remembers
+    /// the choice so auto-enable doesn't turn it back on.
     func disableHiDPI(vendor: UInt32, product: UInt32) -> String? {
-        disableHiDPIPlist(vendor: vendor, product: product)
+        let err = disableHiDPIPlist(vendor: vendor, product: product)
+        if err == nil { setOptedOut(true, vendor: vendor, product: product) }
+        return err
+    }
+
+    /// Whether DisplayManager may enable HiDPI on its own: never after the user turned it
+    /// off for this monitor, and never when it would need an admin password prompt.
+    func allowsAutoEnable(vendor: UInt32, product: UInt32) -> Bool {
+        !optedOutKeys.contains(optOutKey(vendor: vendor, product: product)) && !requiresAdmin(vendor: vendor)
     }
 
     /// Refreshes availableModes on the given DisplayInfo after enabling HiDPI.
@@ -77,6 +64,25 @@ final class HiDPIService: @unchecked Sendable {
     /// writable by the current user (after that, enable/disable needs no password).
     func requiresAdmin(vendor: UInt32) -> Bool {
         !FileManager.default.isWritableFile(atPath: overrideDir(vendor: vendor).path)
+    }
+
+    // MARK: - Opt-out
+
+    private static let optOutDefaultsKey = "fd.hidpi.optOut"
+
+    private var optedOutKeys: [String] {
+        UserDefaults.standard.stringArray(forKey: Self.optOutDefaultsKey) ?? []
+    }
+
+    private func optOutKey(vendor: UInt32, product: UInt32) -> String {
+        String(format: "%x:%x", vendor, product)
+    }
+
+    private func setOptedOut(_ optedOut: Bool, vendor: UInt32, product: UInt32) {
+        let key = optOutKey(vendor: vendor, product: product)
+        var keys = optedOutKeys.filter { $0 != key }
+        if optedOut { keys.append(key) }
+        UserDefaults.standard.set(keys, forKey: Self.optOutDefaultsKey)
     }
 
     // MARK: - Plist Override

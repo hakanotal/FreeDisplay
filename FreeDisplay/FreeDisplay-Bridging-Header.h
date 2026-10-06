@@ -49,16 +49,7 @@
 @property (nonatomic, readonly) CGDirectDisplayID displayID;
 @end
 
-// MARK: - CGSDisplayMode (advanced resolution switching)
-
-typedef struct {
-    uint32_t modeID;
-    uint32_t width;
-    uint32_t height;
-    uint32_t depth;
-    double   refreshRate;
-    uint32_t flags;        // bit 0x20000 = HiDPI
-} CGSDisplayMode;
+// MARK: - CGSConfigureDisplayMode (resolution fallback)
 
 // Real signature (CGSInternal/CGSDisplays.h): the first argument is the transaction from
 // CGBeginDisplayConfiguration, not a connection ID. Passing anything else makes CoreGraphics
@@ -68,7 +59,6 @@ extern CGError CGSConfigureDisplayMode(CGDisplayConfigRef config, CGDirectDispla
 // MARK: - IOAVService Private API (Apple Silicon DDC)
 
 typedef void * IOAVServiceRef;
-extern IOAVServiceRef IOAVServiceCreate(CFAllocatorRef allocator);
 extern IOAVServiceRef IOAVServiceCreateWithService(CFAllocatorRef allocator, io_service_t service);
 extern IOReturn IOAVServiceReadI2C(IOAVServiceRef service,
                                    uint32_t chipAddress,

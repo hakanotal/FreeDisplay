@@ -19,17 +19,11 @@ final class PresetService: ObservableObject, @unchecked Sendable {
     // MARK: - Persistence
 
     func loadPresets() {
-        let saved = SettingsService.shared.load([DisplayPreset].self, filename: filename) ?? []
-        // Merge saved (non-builtin) with freshly generated built-ins
-        let builtins = makeBuiltinPresets()
-        let userPresets = saved.filter { !$0.isBuiltin }
-        presets = builtins + userPresets
+        presets = SettingsService.shared.load([DisplayPreset].self, filename: filename) ?? []
     }
 
     func savePresets() {
-        // Only persist user-created presets; built-ins are always regenerated
-        let toSave = presets.filter { !$0.isBuiltin }
-        SettingsService.shared.save(toSave, filename: filename)
+        SettingsService.shared.save(presets, filename: filename)
     }
 
     // MARK: - CRUD
@@ -40,20 +34,17 @@ final class PresetService: ObservableObject, @unchecked Sendable {
     }
 
     func deletePreset(id: UUID) {
-        guard let index = presets.firstIndex(where: { $0.id == id }),
-              !presets[index].isBuiltin else { return }
+        guard let index = presets.firstIndex(where: { $0.id == id }) else { return }
         presets.remove(at: index)
         savePresets()
     }
 
     // MARK: - Apply
 
-    /// Applies a preset: for each entry, finds the matching display and applies settings.
+    /// Applies a preset: resolution and brightness per external display, then the saved
+    /// arrangement for all displays in a single transaction.
     func applyPreset(_ preset: DisplayPreset) async {
-        guard !isApplying else {
-            print("[PresetService] applyPreset: already applying, skipped")
-            return
-        }
+        guard !isApplying else { return }
         isApplying = true
         applyingPresetID = preset.id
         defer {
@@ -62,105 +53,89 @@ final class PresetService: ObservableObject, @unchecked Sendable {
         }
 
         let displays = DisplayManagerAccessor.shared.displays
-        print("[PresetService] applyPreset '\(preset.name)': \(displays.count) display(s) online, preset has \(preset.displays.count) entr(ies)")
-
-        if displays.isEmpty {
-            print("[PresetService] WARNING: displays list is empty – DisplayManagerAccessor may not be set up")
+        let matched: [(entry: DisplayPresetEntry, display: DisplayInfo)] = preset.displays.compactMap { entry in
+            guard let display = displays.first(where: { $0.displayUUID == entry.displayUUID }),
+                  display.isOnline else { return nil }
+            return (entry, display)
         }
 
-        for (i, display) in displays.enumerated() {
-            print("[PresetService]   display[\(i)] uuid=\(display.displayUUID) id=\(display.displayID) online=\(display.isOnline) modes=\(display.availableModes.count)")
+        var positions: [CGDirectDisplayID: CGPoint] = [:]
+        for (entry, display) in matched {
+            if let x = entry.arrangementX, let y = entry.arrangementY {
+                positions[display.displayID] = CGPoint(x: x, y: y)
+            }
+        }
+        // The preset carries its own layout: stop the automatic arrangement from overriding
+        // it when the mode changes below trigger a reconfiguration.
+        if !positions.isEmpty {
+            SettingsService.shared.autoArrangeExternalAbove = false
         }
 
-        var anyActionTaken = false
+        for (entry, display) in matched {
+            // Never change the built-in display's resolution or brightness via presets.
+            guard !display.isBuiltin else { continue }
 
-        for entry in preset.displays {
-            print("[PresetService] entry uuid=\(entry.displayUUID) target=\(entry.width)×\(entry.height) hiDPI=\(entry.isHiDPI)")
-
-            guard let display = displays.first(where: { $0.displayUUID == entry.displayUUID }) else {
-                print("[PresetService]   -> no display matched UUID '\(entry.displayUUID)' – skipping")
-                continue
-            }
-            guard display.isOnline else {
-                print("[PresetService]   -> display '\(display.name)' is offline – skipping")
-                continue
-            }
-            // Never change built-in display resolution via presets
-            guard !display.isBuiltin else {
-                print("[PresetService]   -> built-in display, skipping")
-                continue
-            }
-
-            let displayID = display.displayID
-            print("[PresetService]   -> matched display '\(display.name)' (id=\(displayID)), \(display.availableModes.count) available modes")
-
-            // Set resolution
             let targetMode = display.availableModes.first(where: {
-                $0.width == entry.width &&
-                $0.height == entry.height &&
-                $0.isHiDPI == entry.isHiDPI
+                $0.width == entry.width && $0.height == entry.height && $0.isHiDPI == entry.isHiDPI
             }) ?? display.availableModes.first(where: {
                 $0.width == entry.width && $0.height == entry.height
             })
 
             if let mode = targetMode {
-                let currentMode = display.currentDisplayMode
-                let alreadyActive = currentMode?.width == mode.width
-                    && currentMode?.height == mode.height
-                    && currentMode?.isHiDPI == mode.isHiDPI
-                if alreadyActive {
-                    print("[PresetService]   -> resolution \(mode.width)×\(mode.height) hiDPI=\(mode.isHiDPI) already active, skipping mode switch")
-                } else {
-                    print("[PresetService]   -> setting mode \(mode.width)×\(mode.height) hiDPI=\(mode.isHiDPI)")
-                    let ok = await ResolutionService.shared.setDisplayMode(mode, for: displayID)
-                    print("[PresetService]   -> setDisplayMode result: \(ok)")
-                    anyActionTaken = true
+                let current = display.currentDisplayMode
+                let alreadyActive = current?.width == mode.width
+                    && current?.height == mode.height
+                    && current?.isHiDPI == mode.isHiDPI
+                if !alreadyActive {
+                    let ok = await ResolutionService.shared.setDisplayMode(mode, for: display.displayID)
+                    if ok { display.currentDisplayMode = mode }
                 }
             } else {
-                print("[PresetService]   -> WARNING: no matching mode found for \(entry.width)×\(entry.height) hiDPI=\(entry.isHiDPI)")
-                print("[PresetService]      available: \(display.availableModes.map { "\($0.width)×\($0.height)/\($0.isHiDPI)" }.joined(separator: ", "))")
+                print("[PresetService] No mode \(entry.width)×\(entry.height) hiDPI=\(entry.isHiDPI) for \(display.name)")
             }
 
-            // Set brightness if specified (convert 0.0-1.0 to 0-100 range used by BrightnessService)
+            // Brightness is stored 0.0–1.0; BrightnessService uses 0–100.
             if let brightness = entry.brightness {
-                print("[PresetService]   -> setting brightness \(brightness)")
-                await BrightnessService.shared.setBrightness(
-                    brightness * 100.0,
-                    for: display,
-                    isAutoAdjust: false
-                )
-                anyActionTaken = true
-            }
-
-            // Set arrangement position if specified
-            if let x = entry.arrangementX, let y = entry.arrangementY {
-                print("[PresetService]   -> setting arrangement x=\(x) y=\(y)")
-                let ok = await ArrangementService.shared.setPosition(
-                    x: Int(x), y: Int(y), for: displayID
-                )
-                print("[PresetService]   -> setPosition result: \(ok)")
-                anyActionTaken = true
+                await BrightnessService.shared.setBrightness(brightness * 100.0, for: display, isAutoAdjust: false)
             }
         }
 
-        print("[PresetService] applyPreset '\(preset.name)' complete. anyActionTaken=\(anyActionTaken)")
-        // DisplayManager is not a singleton; callers with a DisplayManager ref can call refreshDisplays().
+        if !positions.isEmpty {
+            await applyPositions(positions, displays: displays)
+        }
+    }
+
+    /// Moves displays to the saved origins in one transaction. Mode changes above may have
+    /// resized displays, so live sizes are combined with the saved origins.
+    private func applyPositions(_ positions: [CGDirectDisplayID: CGPoint], displays: [DisplayInfo]) async {
+        var frames: [CGDirectDisplayID: CGRect] = [:]
+        for display in displays where !display.isMirrorTarget {
+            let bounds = CGDisplayBounds(display.displayID)
+            frames[display.displayID] = CGRect(origin: positions[display.displayID] ?? bounds.origin,
+                                               size: bounds.size)
+        }
+        // The display at (0, 0) was the main display when the preset was saved.
+        let savedMain = positions.first(where: { $0.value == .zero })?.key
+        guard let mainID = savedMain ?? displays.first(where: { $0.isMain })?.displayID else { return }
+        let ok = await ArrangementService.shared.apply(frames: frames, mainID: mainID)
+        if !ok { print("[PresetService] Applying arrangement failed") }
     }
 
     // MARK: - Capture
 
-    /// Snapshots all current online displays into a new preset.
+    /// Snapshots all current online displays into a new preset. The built-in display is
+    /// included for its position only (its mode and brightness are never changed).
     func captureCurrentState(name: String, icon: String) -> DisplayPreset {
         let displays = DisplayManagerAccessor.shared.displays
         let entries: [DisplayPresetEntry] = displays.compactMap { display in
-            guard display.isOnline, !display.isBuiltin else { return nil }
+            guard display.isOnline, !display.isMirrorTarget else { return nil }
             let mode = display.currentDisplayMode
             return DisplayPresetEntry(
                 displayUUID: display.displayUUID,
                 width: mode?.width ?? display.pixelWidth,
                 height: mode?.height ?? display.pixelHeight,
                 isHiDPI: mode?.isHiDPI ?? false,
-                brightness: display.brightness / 100.0,
+                brightness: display.isBuiltin ? nil : display.brightness / 100.0,
                 arrangementX: display.bounds.origin.x,
                 arrangementY: display.bounds.origin.y
             )
@@ -168,108 +143,18 @@ final class PresetService: ObservableObject, @unchecked Sendable {
         return DisplayPreset(name: name, icon: icon, displays: entries)
     }
 
-    /// Returns the preset ID that matches the current display state, if any.
+    /// Returns the preset ID that matches the current display modes, if any.
     func currentPresetMatch() -> UUID? {
         let displays = DisplayManagerAccessor.shared.displays
-        for preset in presets {
+        for preset in presets where !preset.displays.isEmpty {
             let matches = preset.displays.allSatisfy { entry in
                 guard let display = displays.first(where: { $0.displayUUID == entry.displayUUID }),
-                      display.isOnline else { return false }
-                let mode = display.currentDisplayMode
-                let modeMatch = mode?.width == entry.width && mode?.height == entry.height
-                return modeMatch
+                      display.isOnline,
+                      let mode = display.currentDisplayMode else { return false }
+                return mode.width == entry.width && mode.height == entry.height && mode.isHiDPI == entry.isHiDPI
             }
-            if matches && !preset.displays.isEmpty { return preset.id }
+            if matches { return preset.id }
         }
         return nil
-    }
-
-    // MARK: - Built-in Presets
-
-    /// Regenerates built-in presets from the current display list and merges with user presets.
-    /// Call this whenever the display list changes (e.g., after DisplayManager.refreshDisplays).
-    func refreshBuiltins() {
-        let userPresets = presets.filter { !$0.isBuiltin }
-        presets = makeBuiltinPresets() + userPresets
-    }
-
-    private func makeBuiltinPresets() -> [DisplayPreset] {
-        // Presets only manage external displays — never touch the built-in screen
-        let externals = DisplayManagerAccessor.shared.displays.filter { $0.isOnline && !$0.isBuiltin }
-        guard !externals.isEmpty else { return [] }
-
-        // --- Native mode ---
-        let nativeEntries: [DisplayPresetEntry] = externals.map { display in
-            let nativeMode: DisplayMode? = display.availableModes
-                .filter { !$0.isHiDPI }
-                .max(by: { ($0.width * $0.height) < ($1.width * $1.height) })
-                ?? display.availableModes.max(by: { ($0.width * $0.height) < ($1.width * $1.height) })
-                ?? display.currentDisplayMode
-            return DisplayPresetEntry(
-                displayUUID: display.displayUUID,
-                width: nativeMode?.width ?? display.pixelWidth,
-                height: nativeMode?.height ?? display.pixelHeight,
-                isHiDPI: nativeMode?.isHiDPI ?? false,
-                brightness: nil,
-                arrangementX: nil,
-                arrangementY: nil
-            )
-        }
-
-        var nativePreset = DisplayPreset(
-            name: L("Doğal Mod", "Native Mode"),
-            icon: "rectangle.on.rectangle",
-            displays: nativeEntries
-        )
-        nativePreset.isBuiltin = true
-
-        var result: [DisplayPreset] = [nativePreset]
-
-        // --- HiDPI mode ---
-        // Find the best HiDPI mode for each external display (highest logical resolution)
-        let hasExternalWithHiDPI = externals.contains { display in
-            display.availableModes.contains { $0.isHiDPI }
-        }
-
-        if hasExternalWithHiDPI {
-            let hidpiEntries: [DisplayPresetEntry] = externals.map { display in
-                // Pick the highest-resolution HiDPI mode available
-                if let bestHiDPI = display.availableModes
-                    .filter({ $0.isHiDPI })
-                    .max(by: { ($0.width * $0.height) < ($1.width * $1.height) }) {
-                    return DisplayPresetEntry(
-                        displayUUID: display.displayUUID,
-                        width: bestHiDPI.width,
-                        height: bestHiDPI.height,
-                        isHiDPI: true,
-                        brightness: nil,
-                        arrangementX: nil,
-                        arrangementY: nil
-                    )
-                } else {
-                    let nativeMode = display.availableModes
-                        .filter { !$0.isHiDPI }
-                        .max(by: { ($0.width * $0.height) < ($1.width * $1.height) })
-                    return DisplayPresetEntry(
-                        displayUUID: display.displayUUID,
-                        width: nativeMode?.width ?? display.pixelWidth,
-                        height: nativeMode?.height ?? display.pixelHeight,
-                        isHiDPI: nativeMode?.isHiDPI ?? false,
-                        brightness: nil,
-                        arrangementX: nil,
-                        arrangementY: nil
-                    )
-                }
-            }
-            var hidpiPreset = DisplayPreset(
-                name: L("HiDPI Modu", "HiDPI Mode"),
-                icon: "sparkles",
-                displays: hidpiEntries
-            )
-            hidpiPreset.isBuiltin = true
-            result.append(hidpiPreset)
-        }
-
-        return result
     }
 }

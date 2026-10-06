@@ -15,12 +15,15 @@ Hard-won constraints. Each one cost real debugging time; don't relearn them.
 - Load private framework symbols with `dlopen` + `dlsym`. `@_silgen_name` compiles but fails to link.
 - `CGVirtualDisplay`: `vendorID` must be non-zero (e.g. `0xEEEE`) or init returns nil. `CGVirtualDisplay(descriptor:)` must run on the main thread; `apply(settings)` can run in the background.
 - Bridging-header property names must match the runtime exactly (`maxPixelsWide`/`maxPixelsHigh`, not `maxPixelSize`). Use Chromium's `virtual_display_mac_util.mm` as the reference, never guess.
-- Virtual display configs are runtime-only. Auto-recreating them on launch piles up stale displays.
+- Virtual displays are owned by the process and vanish when it quits. Give each one a unique, stable `serialNum`: macOS derives its identity (UUID, saved layout and mode) from vendor/product/serial, so a shared serial makes them all one "monitor".
 - `CGSConfigureDisplayMode(CGDisplayConfigRef config, CGDirectDisplayID, int modeNum)` takes the transaction from `CGBeginDisplayConfiguration` as its first argument (see CGSInternal). Passing a connection ID makes CoreGraphics dereference a bogus pointer.
 - Applying a non-display ICC profile (CMYK, gray, Lab/XYZ, abstract, named color) with `ColorSyncDeviceSetCustomProfiles` aborts the app inside SkyLight. Only offer `mntr` class + `RGB ` profiles. Read ICC signatures from `ColorSyncProfileCopyData`; `ColorSyncProfileCopyHeader` returns byte-swapped fields (`BGR `).
 
 ## DDC / IOKit
 
+- Built-in brightness on Apple Silicon: there are no `IODisplayConnect` services and `CoreDisplay_Display_GetUserBrightness` returns 1.0. Use `DisplayServicesGet/SetBrightness` (dlsym).
+- Validate DDC replies (opcode 0x02, result 0, VCP echo, checksum 0x50 ^ bytes 0…9). Unvalidated replies report bogus values.
+- One failed DDC transfer isn't proof DDC is unsupported (monitor waking up). Re-probe after wake, and drop leftover software dimming once DDC works.
 - IOFramebuffer I2C (`IOFBCopyI2CInterfaceForBus`) silently does nothing on Apple Silicon. Use IOAVService via `DCPAVServiceProxy`.
 - Don't match IOKit services with `CGDisplayVendorNumber/ModelNumber`; they don't always match IOKit's IDs. Use `NSScreen.localizedName` for names.
 - `CGDisplayIOServicePort` is unavailable. Enumerate `IODisplayConnect` with `IOServiceGetMatchingServices`.
@@ -32,6 +35,7 @@ Hard-won constraints. Each one cost real debugging time; don't relearn them.
 
 - One writer per CoreGraphics resource. `GammaService` owns the transfer table; `BrightnessService` supplies a factor it multiplies in. Every code path (formula *and* quantized table) must apply the factor.
 - Never call `CGDisplayRestoreColorSyncSettings()` (global). Use `GammaService.resetSingleDisplay(_:)`.
+- Resetting image adjustments must not touch the ColorSync profile, and pausing or resetting must keep software brightness and the night tint.
 - Sleep resets all transfer tables. Reapply on `didWakeNotification`: brightness before gamma, or the screen flashes at full brightness.
 - Pass `self` to long-lived C callbacks with `Unmanaged.passRetained`, and `release()` on unregister.
 - Lock mutable state that is read from multiple threads (e.g. `GammaService.activeAdjustments` uses an `NSLock`).
@@ -40,12 +44,19 @@ Hard-won constraints. Each one cost real debugging time; don't relearn them.
 - Don't mutate a dictionary while iterating it; collect the keys first.
 - Wrap blocking WindowServer calls in `CGHelpers.runWithTimeout`.
 - `CGCompleteDisplayConfiguration` invalidates the config on return, even when it fails. Never call `CGCancelDisplayConfiguration` after it (use-after-free); cancel only before completing.
+- `CGConfigureDisplayOrigin`: the display at (0, 0) becomes main, and each completed transaction renormalizes. Move all displays in one transaction, translated so the intended main display sits at the origin.
+- Complete display configurations `.permanently` (as System Settings does). `.forSession` arrangement and mode changes get reverted by WindowServer on reconnect/wake.
+- Never auto-apply a layout from a reconfiguration callback for move events, and never on panel open: it fights the user's own arrangement.
+- Key per-display settings by display UUID. CGDirectDisplayIDs can be reassigned, and a mode ID saved for one monitor is meaningless (or wrong) on another.
 - Event tap callbacks don't own the passed-in event: return `Unmanaged.passUnretained(event)` to pass it through. `passRetained` leaks one event per call.
 - Swift 6 inserts a runtime main-thread check into closures created in a `@MainActor` context and passed as non-`@Sendable` parameters. If such a closure runs on another queue (DDC completions, XPC handlers), the app traps. Mark completion handlers that run off-main `@Sendable`.
 
 ## SwiftUI / MenuBarExtra
 
 - Custom content needs `.menuBarExtraStyle(.window)`. Hide the Dock icon with `INFOPLIST_KEY_LSUIElement: true`.
+- MenuBarExtra content is built lazily and its `.task`/`.onAppear` run on every panel open. Launch, wake and one-time work belongs in `AppDelegate`, and singletons whose init starts work must be touched at launch.
+- `NSWindow(contentRect:…, screen:)` treats the rect as relative to that screen. Pass global rects without `screen:`.
+- AppKit pushes windows out from under the menu bar (`constrainFrameRect`). A window meant to sit in the menu bar row (notch overlay) must override it to return the frame unchanged.
 - On macOS 27 the panel is sized to the content's *minimum* size, so a bare `ScrollView` collapses to 0 height. Test layout on macOS 27, not only on the macOS 14 target.
 - Row components with local state (`isHovered`, `isLoading`) must be separate `struct`s. `@ViewBuilder` functions can't hold `@State`.
 - Observe shared singletons with `@ObservedObject`, not `@StateObject`.

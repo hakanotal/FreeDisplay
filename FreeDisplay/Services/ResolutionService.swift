@@ -7,49 +7,48 @@ final class ResolutionService: @unchecked Sendable {
     static let shared = ResolutionService()
     private init() {}
 
-    /// Persisted modeIDs keyed by displayID string. Used to re-apply modes after sleep/wake.
-    private var savedModeIDs: [String: Int32] = {
-        (UserDefaults.standard.dictionary(forKey: "fd.ResolutionService.savedModes") as? [String: Int32]) ?? [:]
-    }()
+    // MARK: - Sleep / wake
 
-    private func persistModeID(_ modeID: Int32, for displayID: CGDirectDisplayID) {
-        savedModeIDs["\(displayID)"] = modeID
-        UserDefaults.standard.set(savedModeIDs, forKey: "fd.ResolutionService.savedModes")
+    /// Active mode ID per display UUID, captured right before sleep.
+    private var modesBeforeSleep: [String: Int32] = [:]
+
+    private static func onlineDisplayIDs() -> [CGDirectDisplayID] {
+        var count: UInt32 = 0
+        CGGetOnlineDisplayList(0, nil, &count)
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        CGGetOnlineDisplayList(count, &ids, &count)
+        return Array(ids.prefix(Int(count)))
     }
 
-    private func clearSavedModeID(for displayID: CGDirectDisplayID) {
-        savedModeIDs.removeValue(forKey: "\(displayID)")
-        UserDefaults.standard.set(savedModeIDs, forKey: "fd.ResolutionService.savedModes")
-    }
-
-    /// Re-applies the last user-set mode for `displayID` if it differs from the current active mode.
-    /// Called on wake from sleep so macOS mode resets are corrected.
-    func reapplySavedModeIfNeeded(for displayID: CGDirectDisplayID) {
-        guard let savedID = savedModeIDs["\(displayID)"] else { return }
-        let currentID = CGDisplayCopyDisplayMode(displayID)?.ioDisplayModeID
-        guard currentID != savedID else { return }
-
-        // Enumerate modes to find the saved one
-        let options: CFDictionary = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
-        guard let rawModes = CGDisplayCopyAllDisplayModes(displayID, options) as? [CGDisplayMode],
-              let cgMode = rawModes.first(where: { $0.ioDisplayModeID == savedID }) else { return }
-
-        Task.detached(priority: .userInitiated) {
-            let ok = await ResolutionService.applyModeSync(cgMode, on: displayID)
-            #if DEBUG
-            print("[ResolutionService] wake re-apply modeID=\(savedID) on displayID=\(displayID) success=\(ok)")
-            #endif
+    func snapshotModesBeforeSleep() {
+        var snapshot: [String: Int32] = [:]
+        for displayID in Self.onlineDisplayIDs() {
+            if let mode = CGDisplayCopyDisplayMode(displayID) {
+                snapshot[DisplayInfo.uuidString(for: displayID)] = mode.ioDisplayModeID
+            }
         }
+        modesBeforeSleep = snapshot
     }
 
-    // MARK: - Query
+    /// Puts back any mode that changed while the displays slept. Only the pre-sleep state is
+    /// restored, so a mode the user picks later (here or in System Settings) is never undone.
+    func restoreModesAfterWake() {
+        let snapshot = modesBeforeSleep
+        modesBeforeSleep = [:]
+        let options: CFDictionary = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
+        for displayID in Self.onlineDisplayIDs() {
+            guard let savedID = snapshot[DisplayInfo.uuidString(for: displayID)],
+                  CGDisplayCopyDisplayMode(displayID)?.ioDisplayModeID != savedID,
+                  let rawModes = CGDisplayCopyAllDisplayModes(displayID, options) as? [CGDisplayMode],
+                  let cgMode = rawModes.first(where: { $0.ioDisplayModeID == savedID }) else { continue }
 
-    func availableModes(for displayID: CGDirectDisplayID) -> [DisplayMode] {
-        DisplayMode.availableModes(for: displayID)
-    }
-
-    func currentMode(for displayID: CGDirectDisplayID) -> DisplayMode? {
-        DisplayMode.currentMode(for: displayID)
+            Task.detached(priority: .userInitiated) {
+                let ok = await ResolutionService.applyModeSync(cgMode, on: displayID)
+                #if DEBUG
+                print("[ResolutionService] wake restore modeID=\(savedID) on displayID=\(displayID) success=\(ok)")
+                #endif
+            }
+        }
     }
 
     // MARK: - Apply
@@ -121,8 +120,6 @@ final class ResolutionService: @unchecked Sendable {
         }.value
 
         if success {
-            // Persist so we can re-apply after sleep/wake
-            persistModeID(mode.ioDisplayModeID, for: displayID)
             return true
         }
 
@@ -130,11 +127,7 @@ final class ResolutionService: @unchecked Sendable {
         #if DEBUG
         print("[ResolutionService] Standard API failed, trying CGS fallback modeID=\(cgMode.ioDisplayModeID)")
         #endif
-        let fallbackSuccess = await cgsFallback(modeID: UInt32(bitPattern: cgMode.ioDisplayModeID), on: targetID)
-        if fallbackSuccess {
-            persistModeID(mode.ioDisplayModeID, for: displayID)
-        }
-        return fallbackSuccess
+        return await cgsFallback(modeID: UInt32(bitPattern: cgMode.ioDisplayModeID), on: targetID)
     }
 
     // MARK: - Mirror resolution
@@ -210,7 +203,9 @@ final class ResolutionService: @unchecked Sendable {
                 return false
             }
 
-            let complete = CGCompleteDisplayConfiguration(cfg, .forSession)
+            // .permanently, like System Settings: WindowServer then restores this mode itself
+            // after reconnect, wake and restart (.forSession changes get reverted).
+            let complete = CGCompleteDisplayConfiguration(cfg, .permanently)
             #if DEBUG
             if complete != .success {
                 print("[ResolutionService] CGCompleteDisplayConfiguration failed (\(complete.rawValue))")
@@ -237,7 +232,7 @@ final class ResolutionService: @unchecked Sendable {
                 return false
             }
             // On return the configuration is no longer valid, whether or not it succeeded.
-            _ = CGCompleteDisplayConfiguration(cfg, .forSession)
+            _ = CGCompleteDisplayConfiguration(cfg, .permanently)
 
             // Wait for the mode change to propagate before reading back
             try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms

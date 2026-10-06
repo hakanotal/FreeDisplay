@@ -16,6 +16,5 @@ struct DisplayPreset: Codable, Identifiable {
     var id = UUID()
     var name: String
     var icon: String              // SF Symbol name
-    var isBuiltin: Bool = false
     var displays: [DisplayPresetEntry]
 }

@@ -1,14 +1,5 @@
 import Foundation
-import IOKit
 import CoreGraphics
-
-// CoreDisplay private API — reads the user-set brightness of a display (0.0–1.0).
-// Loaded via dlsym at runtime to avoid linking against the private CoreDisplay framework.
-private let _CoreDisplay_GetBrightness: (@convention(c) (CGDirectDisplayID) -> Double)? = {
-    guard let handle = dlopen("/System/Library/Frameworks/CoreDisplay.framework/CoreDisplay", RTLD_LAZY) else { return nil }
-    guard let sym = dlsym(handle, "CoreDisplay_Display_GetUserBrightness") else { return nil }
-    return unsafeBitCast(sym, to: (@convention(c) (CGDirectDisplayID) -> Double).self)
-}()
 
 /// Reads the built-in display's brightness (which macOS auto-adjusts based on ambient light)
 /// and syncs it to external displays. This avoids needing Intel-only LMU hardware access.
@@ -56,40 +47,7 @@ final class AutoBrightnessService: ObservableObject, @unchecked Sendable {
     /// Returns a value in 0.0–1.0, or nil if no builtin display is found.
     /// Safe to call from a background thread.
     nonisolated func readBuiltinBrightness() -> Double? {
-        var displayCount: UInt32 = 0
-        CGGetActiveDisplayList(0, nil, &displayCount)
-        guard displayCount > 0 else { return nil }
-
-        var displays = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
-        CGGetActiveDisplayList(displayCount, &displays, &displayCount)
-
-        guard let builtinID = displays.first(where: { CGDisplayIsBuiltin($0) != 0 }) else {
-            return nil
-        }
-
-        // Try CoreDisplay private API first.
-        let value = _CoreDisplay_GetBrightness?(builtinID) ?? 0
-        if value > 0 {
-            return min(1.0, max(0.0, value))
-        }
-
-        // Fallback: IODisplayGetFloatParameter via IOKit service matching
-        var iter: io_iterator_t = 0
-        guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IODisplayConnect"), &iter) == KERN_SUCCESS else {
-            return nil
-        }
-        defer { IOObjectRelease(iter) }
-        var service = IOIteratorNext(iter)
-        while service != IO_OBJECT_NULL {
-            defer { IOObjectRelease(service); service = IOIteratorNext(iter) }
-            var floatValue: Float = 0
-            let kr = IODisplayGetFloatParameter(service, 0, kIODisplayBrightnessKey as CFString, &floatValue)
-            if kr == KERN_SUCCESS && floatValue > 0 {
-                return min(1.0, max(0.0, Double(floatValue)))
-            }
-        }
-
-        return nil
+        BrightnessService.shared.readBuiltinBrightness()
     }
 
     // MARK: - Polling
@@ -131,8 +89,8 @@ final class AutoBrightnessService: ObservableObject, @unchecked Sendable {
 
         let snapshot = DisplayManagerAccessor.shared.displays
         for display in snapshot {
-            // Only sync to external (non-builtin) displays.
-            guard !display.isBuiltin else { continue }
+            // Only sync to external (non-builtin, non-virtual) displays.
+            guard !display.isBuiltin, !VirtualDisplayService.shared.isVirtualDisplay(display.displayID) else { continue }
             let current = display.brightness
             if abs(current - targetPercentage) >= 2.0 {
                 await BrightnessService.shared.setBrightness(targetPercentage, for: display, isAutoAdjust: true)

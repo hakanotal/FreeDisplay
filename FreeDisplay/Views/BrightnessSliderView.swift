@@ -113,6 +113,10 @@ struct BrightnessSliderView: View {
         .task(id: display.displayID) {
             localBrightness = display.brightness
             updateDDCStatus()
+            // Pick up changes made with the keyboard keys or the monitor's own buttons.
+            await BrightnessService.shared.refreshBrightness(for: display)
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            updateDDCStatus()
         }
         .onChange(of: display.brightness) { _, newValue in
             if !isDragging && abs(newValue - localBrightness) >= 1 {

@@ -14,27 +14,31 @@ class DisplayInfo: ObservableObject, Identifiable {
     @Published var isBuiltin: Bool
     @Published var isMain: Bool
     @Published var isOnline: Bool
-    @Published var isEnabled: Bool
+    /// True when this display mirrors another one (it then shares that display's bounds).
+    @Published var isMirrorTarget: Bool
     @Published var bounds: CGRect
     @Published var pixelWidth: Int
     @Published var pixelHeight: Int
     @Published var brightness: Double
     @Published var availableModes: [DisplayMode]
     @Published var currentDisplayMode: DisplayMode?
-    @Published var ddcValues: [UInt8: UInt16?] = [:]
     let vendorNumber: UInt32
     let modelNumber: UInt32
     let serialNumber: UInt32
 
     /// A stable identifier for the physical display that persists across sleep/wake
     /// even if macOS reassigns the CGDirectDisplayID.
-    var displayUUID: String {
+    var displayUUID: String { Self.uuidString(for: displayID) }
+
+    /// Stable per-display key for persisted settings. CGDirectDisplayIDs can be reassigned
+    /// (reconnects, other ports), so never key saved state by the raw display ID.
+    nonisolated static func uuidString(for displayID: CGDirectDisplayID) -> String {
         if let cfUUID = CGDisplayCreateUUIDFromDisplayID(displayID),
            let uuidStr = CFUUIDCreateString(nil, cfUUID.takeRetainedValue()) {
             return uuidStr as String
         }
-        // Fallback: vendor+model+serial hash is more stable than raw displayID
-        return "v\(vendorNumber)-m\(modelNumber)-s\(serialNumber)"
+        // Fallback: vendor+model+serial is more stable than the raw displayID
+        return "v\(CGDisplayVendorNumber(displayID))-m\(CGDisplayModelNumber(displayID))-s\(CGDisplaySerialNumber(displayID))"
     }
 
     /// The native (highest non-HiDPI) resolution, used for HiDPI enablement and presets.
@@ -51,27 +55,28 @@ class DisplayInfo: ObservableObject, Identifiable {
         self.isBuiltin = builtin
         self.isMain = CGDisplayIsMain(displayID) != 0
         self.isOnline = CGDisplayIsOnline(displayID) != 0
-        self.isEnabled = CGDisplayIsActive(displayID) != 0
+        self.isMirrorTarget = CGDisplayMirrorsDisplay(displayID) != kCGNullDirectDisplay
         self.bounds = CGDisplayBounds(displayID)
         self.pixelWidth = CGDisplayPixelsWide(displayID)
         self.pixelHeight = CGDisplayPixelsHigh(displayID)
-        // Use persisted brightness as the initial value if available, otherwise 50.0.
-        // BrightnessService will overwrite this with the real hardware value once probed.
-        self.brightness = SettingsService.shared.brightness(for: displayID) ?? 50.0
+        // Start from the last brightness FreeDisplay set for this display, otherwise 50.
+        // BrightnessService overwrites this with the real hardware value once probed.
+        self.brightness = SettingsService.shared.brightness(forDisplayUUID: Self.uuidString(for: displayID)) ?? 50.0
         self.availableModes = []
         self.currentDisplayMode = DisplayMode.currentMode(for: displayID)
-        let vendor = CGDisplayVendorNumber(displayID)
-        let model = CGDisplayModelNumber(displayID)
-        self.vendorNumber = vendor
-        self.modelNumber = model
+        self.vendorNumber = CGDisplayVendorNumber(displayID)
+        self.modelNumber = CGDisplayModelNumber(displayID)
         self.serialNumber = CGDisplaySerialNumber(displayID)
+        self.name = builtin ? Self.builtinDisplayName : L("Ekran \(displayID)", "Display \(displayID)")
+        refreshName()
+    }
 
-        if builtin {
-            self.name = Self.builtinDisplayName
-        } else {
-            self.name = NSScreen.screen(for: displayID)?.localizedName ?? L("Ekran \(displayID)", "Display \(displayID)")
-        }
-
+    /// Picks up the system name for external displays. NSScreen may not know a display yet
+    /// right after it is plugged in, so this is retried on every refresh.
+    func refreshName() {
+        guard !isBuiltin, let screenName = NSScreen.screen(for: displayID)?.localizedName,
+              screenName != name else { return }
+        name = screenName
     }
 
     func loadDetails() async {

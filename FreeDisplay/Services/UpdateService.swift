@@ -6,8 +6,8 @@ import AppKit
 final class UpdateService: ObservableObject, @unchecked Sendable {
     static let shared = UpdateService()
 
-    // Set these when the repo is published. Placeholder values disable the update check.
-    private let repoOwner = "OWNER"
+    // GitHub repository whose latest release is compared with the running version.
+    private let repoOwner = "hakanotal"
     private let repoName  = "FreeDisplay"
 
     // Current app bundle version (CFBundleShortVersionString)
@@ -26,10 +26,6 @@ final class UpdateService: ObservableObject, @unchecked Sendable {
     // MARK: - Check for Updates
 
     func checkForUpdates() async {
-        guard !repoOwner.isEmpty, repoOwner != "OWNER", !repoName.isEmpty else {
-            // Repo not yet configured — silently skip update check
-            return
-        }
         if let last = lastCheckDate, Date().timeIntervalSince(last) < 3600 { return }
         guard !isChecking else { return }
         isChecking = true

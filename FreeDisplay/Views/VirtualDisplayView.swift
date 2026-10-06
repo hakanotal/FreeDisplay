@@ -4,7 +4,8 @@ import CoreGraphics
 /// "Virtual Displays" management section shown in the MenuBarView tools area.
 /// Lists all saved virtual display configurations and allows creating / deleting them.
 struct VirtualDisplayView: View {
-    @StateObject private var service = VirtualDisplayService.shared
+    @ObservedObject private var service = VirtualDisplayService.shared
+    @State private var togglingConfigID: UUID?
     @State private var showCreateForm = false
     @State private var configToDelete: UUID?
     @State private var isCreating: Bool = false
@@ -115,26 +116,34 @@ struct VirtualDisplayView: View {
 
             Spacer()
 
-            // Active / inactive badge
-            if active {
-                Text(L("Etkin", "Active"))
-                    .font(.caption2)
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2)
-                    .background(Color.blue)
-                    .cornerRadius(4)
+            // Turn the display on/off without deleting its configuration.
+            if togglingConfigID == config.id {
+                ProgressView()
+                    .scaleEffect(0.5)
+                    .frame(width: 16, height: 16)
+            } else {
+                Toggle("", isOn: Binding(
+                    get: { active },
+                    set: { setActive($0, config: config) }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .controlSize(.mini)
+                .disabled(togglingConfigID != nil)
+                .help(active ? L("Sanal ekranı kapat", "Turn off this virtual display")
+                             : L("Sanal ekranı aç", "Turn on this virtual display"))
             }
 
             // Delete button
             Button(action: {
                 configToDelete = config.id
             }) {
-                Label(L("Sil", "Delete"), systemImage: "trash")
+                Image(systemName: "trash")
                     .font(.caption)
                     .foregroundColor(.red)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(L("Sil", "Delete"))
             .help(L("Bu sanal ekranı sil", "Delete this virtual display"))
         }
         .padding(.horizontal, 10)
@@ -148,6 +157,23 @@ struct VirtualDisplayView: View {
                 configToDelete = config.id
             } label: {
                 Label(L("Sil", "Delete"), systemImage: "trash")
+            }
+        }
+    }
+
+    private func setActive(_ active: Bool, config: VirtualDisplayService.VirtualDisplayConfig) {
+        if !active {
+            service.destroy(configID: config.id)
+            return
+        }
+        togglingConfigID = config.id
+        Task { @MainActor in
+            let success = await service.create(config: config)
+            togglingConfigID = nil
+            if !success {
+                createError = L("Sanal ekran oluşturulamadı, tekrar deneyin", "Couldn't create virtual display, please try again")
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                createError = nil
             }
         }
     }

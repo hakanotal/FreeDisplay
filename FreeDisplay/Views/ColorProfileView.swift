@@ -188,15 +188,6 @@ private struct ProfileRow: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Spacer()
-                if profile.colorSpaceType != "RGB" {
-                    Text(profile.colorSpaceType)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(Color.secondary.opacity(0.12))
-                        .cornerRadius(3)
-                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 5)

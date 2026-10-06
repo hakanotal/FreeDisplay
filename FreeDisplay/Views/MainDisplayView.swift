@@ -33,11 +33,13 @@ struct MainDisplayView: View {
                 .contentShape(Rectangle())
                 .onTapGesture {
                     Task { @MainActor in
-                        let success = await ArrangementService.shared.setAsMainDisplay(
+                        let success = await ArrangementService.shared.setMainDisplay(
                             display.displayID,
-                            among: displayManager.displays
+                            frames: displayManager.arrangementFrames
                         )
-                        if !success {
+                        if success {
+                            displayManager.refreshDisplays()
+                        } else {
                             errorMessage = L("Ana ekran ayarlanamadı", "Couldn't set main display")
                             Task { @MainActor in
                                 try? await Task.sleep(nanoseconds: 3_000_000_000)

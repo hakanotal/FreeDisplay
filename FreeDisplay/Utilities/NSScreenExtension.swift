@@ -8,9 +8,4 @@ extension NSScreen {
             ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == displayID
         }
     }
-
-    /// Returns the CGDirectDisplayID for this screen, or 0 if unavailable.
-    var displayID: CGDirectDisplayID {
-        (deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) ?? 0
-    }
 }

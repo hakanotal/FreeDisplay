@@ -9,7 +9,7 @@ struct NotchView: View {
     @State private var isHovered = false
 
     private func syncState() {
-        isHidingNotch = NotchOverlayManager.shared.isShowingOverlay(for: display.displayID)
+        isHidingNotch = NotchOverlayManager.shared.isNotchHidden(for: display.displayID)
     }
 
     private var notchHeight: CGFloat {
@@ -46,11 +46,7 @@ struct NotchView: View {
                         .labelsHidden()
                         .controlSize(.small)
                         .onChange(of: isHidingNotch) { _, newValue in
-                            if newValue {
-                                NotchOverlayManager.shared.showOverlay(for: display.displayID)
-                            } else {
-                                NotchOverlayManager.shared.hideOverlay(for: display.displayID)
-                            }
+                            NotchOverlayManager.shared.setNotchHidden(newValue, for: display.displayID)
                         }
                         .help(L("Çentiği gizlemek için menü çubuğu alanında siyah bir maske göster", "Show a black mask in the menu bar area to hide the notch"))
                 }

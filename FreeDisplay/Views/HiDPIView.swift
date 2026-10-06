@@ -63,37 +63,28 @@ struct HiDPIRowView: View {
 
     private func toggle() {
         isLoading = true
-        if isHiDPIOn {
-            let err = HiDPIService.shared.disableHiDPI(
-                for: display.displayID,
-                vendor: display.vendorNumber,
-                product: display.modelNumber
-            )
+        let vendor = display.vendorNumber
+        let product = display.modelNumber
+        let enable = !isHiDPIOn
+        Task { @MainActor in
+            // Let the spinner render before the (possibly blocking) admin prompt.
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            let err: String?
+            if enable {
+                // Use the highest available mode as native resolution,
+                // not display.pixelWidth which is the CURRENT resolution
+                let (nativeW, nativeH) = display.nativeResolution
+                err = HiDPIService.shared.enableHiDPI(vendor: vendor, product: product,
+                                                      nativeWidth: nativeW, nativeHeight: nativeH)
+            } else {
+                err = HiDPIService.shared.disableHiDPI(vendor: vendor, product: product)
+            }
             isLoading = false
             if let err {
                 errorMessage = err
             } else {
-                isHiDPIOn = false
-            }
-        } else {
-            Task {
-                // Use the highest available mode as native resolution,
-                // not display.pixelWidth which is the CURRENT resolution
-                let (nativeW, nativeH) = display.nativeResolution
-                let err = await HiDPIService.shared.enableHiDPI(
-                    for: display.displayID,
-                    vendor: display.vendorNumber,
-                    product: display.modelNumber,
-                    nativeWidth: nativeW,
-                    nativeHeight: nativeH
-                )
-                isLoading = false
-                if let err {
-                    errorMessage = err
-                } else {
-                    isHiDPIOn = true
-                    HiDPIService.shared.refreshModes(for: display)
-                }
+                isHiDPIOn = enable
+                if enable { HiDPIService.shared.refreshModes(for: display) }
             }
         }
     }

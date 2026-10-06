@@ -2,24 +2,16 @@ import Foundation
 import CoreGraphics
 @preconcurrency import ColorSync
 
-/// ICC color profile model.
+/// ICC color profile model (RGB display-class profiles only; see makeProfileImpl).
 struct ICCProfile: Identifiable, Equatable {
     let id: UUID
     let name: String
     let path: URL
-    let colorSpaceType: String  // "RGB", "CMYK", "Gray", etc.
 
-    init(name: String, path: URL, colorSpaceType: String) {
+    init(name: String, path: URL) {
         self.id = UUID()
         self.name = name
         self.path = path
-        self.colorSpaceType = colorSpaceType
-    }
-
-    /// Convenience failable initializer: loads profile metadata from a file URL.
-    init?(url: URL) {
-        guard let profile = ColorProfileService.makeProfile(from: url) else { return nil }
-        self = profile
     }
 
     static func == (lhs: ICCProfile, rhs: ICCProfile) -> Bool {
@@ -73,10 +65,6 @@ final class ColorProfileService: @unchecked Sendable {
         }.value
     }
 
-    static func makeProfile(from url: URL) -> ICCProfile? {
-        makeProfileImpl(from: url)
-    }
-
     private static func makeProfileImpl(from url: URL) -> ICCProfile? {
         guard let rawProfile = ColorSyncProfileCreateWithURL(url as CFURL, nil) else { return nil }
         let profile = rawProfile.takeRetainedValue()
@@ -93,18 +81,7 @@ final class ColorProfileService: @unchecked Sendable {
         } else {
             name = url.deletingPathExtension().lastPathComponent
         }
-        return ICCProfile(name: name, path: url, colorSpaceType: colorSpaceType(from: profile))
-    }
-
-    private static func colorSpaceType(from profile: ColorSyncProfile) -> String {
-        switch headerTag(profile, offset: 16)?.trimmingCharacters(in: .whitespaces) {
-        case "RGB":  return "RGB"
-        case "CMYK": return "CMYK"
-        case "GRAY": return "Gray"
-        case "Lab":  return "Lab"
-        case "XYZ":  return "XYZ"
-        default:     return "RGB"
-        }
+        return ICCProfile(name: name, path: url)
     }
 
     /// Reads a 4-character signature from the ICC header (offset 12 = device class,
@@ -134,23 +111,6 @@ final class ColorProfileService: @unchecked Sendable {
         }
         guard let cfName = colorSpace.name else { return L("Bilinmiyor", "Unknown") }
         return humanReadable(cfName as String)
-    }
-
-    /// Returns a description like "Dahili (8-bit)" for the display's current color mode.
-    func colorModeDescription(for displayID: CGDirectDisplayID) -> String {
-        guard let mode = CGDisplayCopyDisplayMode(displayID) else { return L("Bilinmiyor", "Unknown") }
-        let encoding: String
-        if let cfEnc = mode.pixelEncoding { encoding = cfEnc as String } else { encoding = "" }
-        let bpc = bitsPerChannel(from: encoding)
-        let source = CGDisplayIsBuiltin(displayID) != 0 ? L("Dahili", "Internal") : L("Harici", "External")
-        return "\(source) (\(bpc)-bit)"
-    }
-
-    private func bitsPerChannel(from encoding: String) -> Int {
-        let rCount = encoding.filter { $0 == "R" }.count
-        if rCount > 0 { return rCount }
-        let dCount = encoding.filter { $0 == "D" }.count
-        return dCount >= 30 ? 10 : 8
     }
 
     // Bridge CGColorSpace CFString constants to Swift String for comparison

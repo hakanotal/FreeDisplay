@@ -35,7 +35,9 @@ There is no automated test suite. DDC, HiDPI and brightness changes must be chec
 
 **Display hardware**
 - `GammaService` is the only writer of `CGSetDisplayTransferByFormula/Table`. Software brightness goes through it. Never call the global `CGDisplayRestoreColorSyncSettings()`; use `GammaService.resetSingleDisplay(_:)`.
-- Services that write display state must reapply it on `NSWorkspace.didWakeNotification` (wired in `FreeDisplayApp` via `AppDelegate.onWake`).
+- Services that write display state must reapply it on `NSWorkspace.didWakeNotification` (wired in `AppDelegate`, routine in `DisplayManager.reapplyDisplayStateAfterWake`).
+- Key persisted per-display state by display UUID (`DisplayInfo.uuidString(for:)`), never by `CGDirectDisplayID`.
+- Display configuration transactions complete `.permanently`; arrangement changes go through `ArrangementService.apply` (one transaction for all displays).
 - Long-lived C callbacks: `Unmanaged.passRetained(self)` + `release()` on unregister. Never `passUnretained`.
 - HiDPI uses plist overrides in `/Library/Displays/Contents/Resources/Overrides/` (admin via `NSAppleScript`). Never use `CGConfigureDisplayMirrorOfDisplay` for HiDPI. Never set `DisplayProductName`.
 - Private frameworks: `dlopen` + `dlsym`, never `@_silgen_name`.

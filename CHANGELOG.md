@@ -4,6 +4,24 @@ All notable changes to FreeDisplay are documented here.
 
 ---
 
+## Unreleased
+
+Display arrangement fix and fixes from a full code review.
+
+- **Arrangement no longer resets**: a hidden "external above built-in" auto-arrange was forced on and re-ran 2 s after every menu open and after mode changes, moving displays back. It is now an opt-in switch in Arrange Displays (off by default, also for existing installs) that turns itself off when you arrange displays by hand, and it lines up several external displays side by side instead of stacking them on one spot
+- **Arrangement editor**: dragging snaps the display flush against the nearest edge like System Settings (with a preview outline), keeps it where you dropped it, and applies the whole layout in one step that macOS remembers (also across reconnects and restarts). "Set as main display" keeps the layout instead of swapping positions. Positions are refreshed when you rearrange in System Settings
+- **Built-in brightness on Apple Silicon**: the built-in slider, the combined slider and Auto Brightness now work (they read and set the panel through DisplayServices; Auto Brightness used to read 100% all the time)
+- **After sleep and at login**: brightness, image adjustments, night mode and resolution are restored even if the menu was never opened, Auto Brightness and auto-created virtual displays start at launch, and DDC is re-detected after wake. Resolution is only restored when it changed during sleep, so a mode picked in System Settings is no longer overwritten on the next wake
+- **Image adjustments**: closing the section or Reset All no longer removes the selected color profile or software dimming; adjustments are saved immediately and survive wake/reconnect; Pause keeps night mode and dimming; positive contrast and gain now have an effect; inverted colors respect dimming and night mode
+- **External brightness**: no more double dimming when a monitor that once fell back to software brightness works over DDC again; DDC replies are validated; the slider shows the right value after presets, Auto Brightness, the keyboard or the monitor's own buttons
+- **HiDPI**: turning HiDPI off for a monitor sticks (it was re-enabled on the next launch or reconnect), and plugging in a monitor never pops an administrator prompt on its own
+- **Presets**: the arrangement is restored correctly (all displays, including the built-in, in one step) and the "current" marker tells HiDPI and non-HiDPI modes apart
+- **Virtual displays**: each one has its own identity and name, inactive ones can be switched on again from the list, and auto-create no longer skips a display that has the same size as a real monitor
+- **Notch**: "Hide notch area" now fills the built-in screen's menu bar row (it landed off-screen, or just below the menu bar, covering the top of the desktop), keeps the menu bar items visible, follows the screen when the arrangement changes, and is remembered across relaunches, sleep and reconnects
+- **Other**: brightness keys over displays FreeDisplay can't control (Sidecar, AirPlay) behave normally again; external display names no longer get stuck as "Display N"; update checks point at the real repository; removed unused code (mirroring service, resolution slider, color picker)
+
+---
+
 ## v2.1 (2026-10-03)
 
 Crash fixes from a full code review.

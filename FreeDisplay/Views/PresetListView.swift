@@ -3,21 +3,16 @@ import SwiftUI
 // MARK: - PresetListView
 
 /// Section in MenuBarView listing user-created presets.
-/// Built-in presets are intentionally not shown in the menu.
 struct PresetListView: View {
     @ObservedObject private var presetService = PresetService.shared
 
-    private var userPresets: [DisplayPreset] {
-        presetService.presets.filter { !$0.isBuiltin }
-    }
-
     var body: some View {
+        let currentMatch = presetService.currentPresetMatch()
         VStack(alignment: .leading, spacing: 0) {
-            // User-created presets as rows
-            ForEach(userPresets) { preset in
+            ForEach(presetService.presets) { preset in
                 PresetRow(
                     preset: preset,
-                    isCurrentMatch: presetService.currentPresetMatch() == preset.id,
+                    isCurrentMatch: currentMatch == preset.id,
                     isApplying: presetService.applyingPresetID == preset.id
                 )
             }
@@ -28,7 +23,7 @@ struct PresetListView: View {
     }
 }
 
-// MARK: - PresetRow (for user-created presets)
+// MARK: - PresetRow
 
 struct PresetRow: View {
     let preset: DisplayPreset

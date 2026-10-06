@@ -27,14 +27,12 @@ final class SettingsService: ObservableObject, @unchecked Sendable {
     private enum Keys {
         static let launchAtLogin          = "fd.launchAtLogin"
         static let launchAtLoginPrompted  = "fd.launchAtLogin.prompted"
-        static let menuWidth              = "fd.menuWidth"
         static let showCombinedBrightness = "fd.showCombinedBrightness"
-        static let ddcCacheTTL            = "fd.ddcCacheTTL"
         static let checkUpdatesOnLaunch   = "fd.checkUpdatesOnLaunch"
-        static let colorPickerHistory     = "fd.colorPickerHistory"
-        // Per-display keys use prefix + displayID
-        static let brightnessPrefix       = "fd.brightness_"
-        static let contrastPrefix         = "fd.contrast_"
+        static let autoArrangeExternalAbove = "fd.arrangement.autoExternalAbove"
+        static let migrationVersion       = "fd.migrationVersion"
+        // Per-display keys use prefix + display UUID (see DisplayInfo.uuidString(for:))
+        static let brightnessPrefix       = "fd.brightness."
     }
 
     // MARK: - Published Settings
@@ -48,58 +46,32 @@ final class SettingsService: ObservableObject, @unchecked Sendable {
         didSet { defaults.set(launchAtLoginPrompted, forKey: Keys.launchAtLoginPrompted) }
     }
 
-    @Published var menuWidth: Double = 320 {
-        didSet { defaults.set(menuWidth, forKey: Keys.menuWidth) }
-    }
-
     @Published var showCombinedBrightness: Bool = true {
         didSet { defaults.set(showCombinedBrightness, forKey: Keys.showCombinedBrightness) }
-    }
-
-    @Published var ddcCacheTTL: Double = 5.0 {
-        didSet { defaults.set(ddcCacheTTL, forKey: Keys.ddcCacheTTL) }
     }
 
     @Published var checkUpdatesOnLaunch: Bool = true {
         didSet { defaults.set(checkUpdatesOnLaunch, forKey: Keys.checkUpdatesOnLaunch) }
     }
 
-    /// Recently sampled colors (hex strings, newest first, max 20).
-    @Published var colorPickerHistory: [String] = [] {
-        didSet {
-            defaults.set(colorPickerHistory, forKey: Keys.colorPickerHistory)
-        }
+    /// Keep external displays in a row above the built-in display (opt-in). Re-applied on
+    /// launch, hot-plug and mode changes; any manual arrangement turns it off.
+    @Published var autoArrangeExternalAbove: Bool = false {
+        didSet { defaults.set(autoArrangeExternalAbove, forKey: Keys.autoArrangeExternalAbove) }
     }
 
     // MARK: - Per-Display Settings
 
-    func brightness(for displayID: CGDirectDisplayID) -> Double? {
-        let key = Keys.brightnessPrefix + "\(displayID)"
+    /// Last brightness (0–100) FreeDisplay set for the display, used as the starting value
+    /// until the hardware has been read.
+    func brightness(forDisplayUUID uuid: String) -> Double? {
+        let key = Keys.brightnessPrefix + uuid
         guard defaults.object(forKey: key) != nil else { return nil }
         return defaults.double(forKey: key)
     }
 
-    func setBrightness(_ value: Double, for displayID: CGDirectDisplayID) {
-        defaults.set(value, forKey: Keys.brightnessPrefix + "\(displayID)")
-    }
-
-    func contrast(for displayID: CGDirectDisplayID) -> Double? {
-        let key = Keys.contrastPrefix + "\(displayID)"
-        guard defaults.object(forKey: key) != nil else { return nil }
-        return defaults.double(forKey: key)
-    }
-
-    func setContrast(_ value: Double, for displayID: CGDirectDisplayID) {
-        defaults.set(value, forKey: Keys.contrastPrefix + "\(displayID)")
-    }
-
-    // MARK: - Color History
-
-    func addColorToHistory(_ hex: String) {
-        var history = colorPickerHistory.filter { $0 != hex }
-        history.insert(hex, at: 0)
-        if history.count > 20 { history = Array(history.prefix(20)) }
-        colorPickerHistory = history
+    func setBrightness(_ value: Double, forDisplayUUID uuid: String) {
+        defaults.set(value, forKey: Keys.brightnessPrefix + uuid)
     }
 
     // MARK: - JSON Persistence Helpers
@@ -125,19 +97,60 @@ final class SettingsService: ObservableObject, @unchecked Sendable {
     // MARK: - Load All
 
     private func loadAll() {
-        // Sync launch-at-login from the authoritative SMAppService state, not just UserDefaults.
+        // Sync launch-at-login from the authoritative launchd agent state, not just UserDefaults.
         // This handles the case where the user toggled it externally or after a fresh install.
         launchAtLogin = LaunchService.shared.isEnabled
         launchAtLoginPrompted = defaults.bool(forKey: Keys.launchAtLoginPrompted)
-        menuWidth = defaults.object(forKey: Keys.menuWidth) != nil
-            ? defaults.double(forKey: Keys.menuWidth) : 320
         showCombinedBrightness = defaults.object(forKey: Keys.showCombinedBrightness) != nil
             ? defaults.bool(forKey: Keys.showCombinedBrightness) : true
-        ddcCacheTTL = defaults.object(forKey: Keys.ddcCacheTTL) != nil
-            ? defaults.double(forKey: Keys.ddcCacheTTL) : 5.0
         checkUpdatesOnLaunch = defaults.object(forKey: Keys.checkUpdatesOnLaunch) != nil
             ? defaults.bool(forKey: Keys.checkUpdatesOnLaunch) : true
-        colorPickerHistory = defaults.stringArray(forKey: Keys.colorPickerHistory) ?? []
+        autoArrangeExternalAbove = defaults.bool(forKey: Keys.autoArrangeExternalAbove)
+    }
+
+    // MARK: - Migration
+
+    /// One-time cleanup of keys from older versions. Call before any service reads defaults.
+    /// - Per-display state keyed by CGDirectDisplayID moves to display-UUID keys (IDs can be
+    ///   reassigned to another monitor) for the displays that are online now.
+    /// - Removes keys of settings that no longer exist, including the old always-on
+    ///   "external above built-in" auto-arrange flag (the new opt-in toggle starts off).
+    static func migrateLegacyDefaults() {
+        let defaults = UserDefaults.standard
+        guard defaults.integer(forKey: Keys.migrationVersion) < 1 else { return }
+
+        var count: UInt32 = 0
+        CGGetOnlineDisplayList(0, nil, &count)
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        CGGetOnlineDisplayList(count, &ids, &count)
+        let uuidByID = Dictionary(uniqueKeysWithValues: ids.prefix(Int(count)).map {
+            ("\($0)", DisplayInfo.uuidString(for: $0))
+        })
+
+        // Old prefix → new prefix for per-display state worth keeping.
+        let moves = [
+            ("fd.GammaService.savedAdjustment.", "fd.GammaService.savedAdjustment."),
+            ("fd.softBrightness_", "fd.softBrightness."),
+        ]
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("fd.") {
+            if let move = moves.first(where: { key.hasPrefix($0.0) }) {
+                let (oldPrefix, newPrefix) = move
+                let suffix = String(key.dropFirst(oldPrefix.count))
+                // UUID-keyed entries are already migrated; only numeric display IDs move.
+                guard !suffix.isEmpty, suffix.allSatisfy(\.isNumber) else { continue }
+                if let uuid = uuidByID[suffix], defaults.object(forKey: newPrefix + uuid) == nil {
+                    defaults.set(defaults.object(forKey: key), forKey: newPrefix + uuid)
+                }
+                defaults.removeObject(forKey: key)
+            } else if key.hasPrefix("fd.brightness_") || key.hasPrefix("fd.contrast_") {
+                defaults.removeObject(forKey: key)
+            }
+        }
+        for key in ["fd.arrangement.externalAbove", "fd.ResolutionService.savedModes",
+                    "fd.colorPickerHistory", "fd.menuWidth", "fd.ddcCacheTTL"] {
+            defaults.removeObject(forKey: key)
+        }
+        defaults.set(1, forKey: Keys.migrationVersion)
     }
 }
 

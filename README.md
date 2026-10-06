@@ -4,7 +4,7 @@
 
 BetterDisplay is a great app, but its best features are locked behind a paid Pro license. FreeDisplay implements the most essential BetterDisplay features as a completely free, open-source macOS menu bar app.
 
-[Download Latest Release](https://github.com/hakanotal/FreeDisplayTurkish/releases/latest) | [Report an Issue](https://github.com/hakanotal/FreeDisplayTurkish/issues)
+[Download Latest Release](https://github.com/hakanotal/FreeDisplay/releases/latest) | [Report an Issue](https://github.com/hakanotal/FreeDisplay/issues)
 
 ---
 
@@ -24,6 +24,10 @@ BetterDisplay is a great app, but its best features are locked behind a paid Pro
 - **Auto-restart** — with "Launch at login" on, FreeDisplay relaunches itself after a crash (Quit still quits)
 - **Night mode** — blue light filter that warms all displays, always on or on a daily schedule
 - **Turkish + English UI** — full Turkish translation; switch languages live in Settings → Dil / Language
+- **Display arrangement (v2.2)** — drag displays and they snap into place like in System Settings; the layout no longer jumps back after a few seconds, and macOS remembers it. "Keep external displays above built-in" is now an optional switch
+- **Built-in brightness on Apple Silicon (v2.2)** — the built-in slider, combined slider and auto brightness now actually work on M-series Macs
+- **Notch (v2.2)** — "Hide notch area" blacks out the menu bar row around the notch, keeps menu items visible and is remembered
+- **Reliability (v2.2)** — settings are restored after sleep and at login, image adjustments no longer reset your color profile, turning HiDPI off for a monitor sticks. See the [CHANGELOG](CHANGELOG.md) for the full list
 
 ---
 
@@ -31,19 +35,19 @@ BetterDisplay is a great app, but its best features are locked behind a paid Pro
 
 | BetterDisplay Feature | FreeDisplay | Notes |
 |----------------------|:-----------:|-------|
-| DDC Brightness & Contrast | ✅ | Hardware control via IOKit I2C (Intel) / IOAVService (Apple Silicon) |
+| DDC Brightness | ✅ | Hardware control via IOKit I2C (Intel) / IOAVService (Apple Silicon); software dimming when DDC isn't available |
 | Software Brightness (Gamma) | ✅ | Per-display gamma table control with smooth transitions |
 | Keyboard Brightness Keys for External Displays | ✅ | Intercepts brightness keys when cursor is on external display, shows native macOS OSD |
 | Auto Brightness Sync | ✅ | Syncs external display brightness with built-in display changes |
-| HiDPI Virtual Displays | ✅ | Creates HiDPI dummy displays via CGVirtualDisplay private API |
-| Display Arrangement | ✅ | Position displays (external above built-in, etc.) |
+| HiDPI Modes | ✅ | Adds HiDPI (Retina) modes to external monitors via display override files |
+| Display Arrangement | ✅ | Drag to arrange with edge snapping, set the main display, optional "external above built-in" |
 | Resolution & HiDPI Switching | ✅ | Browse and switch all available display modes including HiDPI |
 | ICC Color Profile Management | ✅ | Switch color profiles per display via ColorSync |
 | Image Adjustment (Gamma/Temperature) | ✅ | Software contrast, color temperature, RGB channels, invert |
 | Display Presets | ✅ | Save & restore full display configurations with one click |
-| Virtual Display (Dummy) | ✅ | Create headless virtual displays |
-| Notch Management | ✅ | Hide the MacBook notch with a black overlay |
-| Launch at Login | ✅ | Via SMAppService |
+| Virtual Display (Dummy) | ✅ | Create virtual displays via the CGVirtualDisplay private API; switch them on and off |
+| Notch Management | ✅ | Black out the menu bar row around the MacBook notch (menu items stay visible) |
+| Launch at Login | ✅ | Per-user launchd agent; also restarts FreeDisplay after a crash |
 
 ### Not Included (intentionally)
 
@@ -67,7 +71,7 @@ BetterDisplay is a great app, but its best features are locked behind a paid Pro
 
 ### Option 1: Download DMG
 
-1. Download the latest `FreeDisplay-<version>.dmg` from [Releases](https://github.com/hakanotal/FreeDisplayTurkish/releases/latest) (universal: Apple Silicon + Intel, macOS 14+)
+1. Download the latest `FreeDisplay-<version>.dmg` from [Releases](https://github.com/hakanotal/FreeDisplay/releases/latest) (universal: Apple Silicon + Intel, macOS 14+)
 2. Open the DMG and drag **FreeDisplay.app** to **Applications**
 3. First launch: the app isn't notarized, so macOS blocks it once. Open it, then go to **System Settings → Privacy & Security** and click **Open Anyway** — or run:
    ```bash
@@ -77,8 +81,8 @@ BetterDisplay is a great app, but its best features are locked behind a paid Pro
 ### Option 2: Build from Source
 
 ```bash
-git clone https://github.com/hakanotal/FreeDisplayTurkish.git
-cd FreeDisplayTurkish
+git clone https://github.com/hakanotal/FreeDisplay.git
+cd FreeDisplay
 ./scripts/build-dmg.sh   # → build/FreeDisplay.app and build/FreeDisplay-<version>.dmg
 ```
 
@@ -91,6 +95,7 @@ Xcode is optional: without it the script builds with the Command Line Tools (`xc
 | Permission | Why |
 |------------|-----|
 | **Accessibility** | Required for brightness key interception on external displays |
+| **Administrator password** (once per monitor brand) | Turning HiDPI on or off writes override files under `/Library/Displays` |
 
 No internet connection required (except optional update checks via GitHub Releases API).
 
@@ -99,11 +104,11 @@ No internet connection required (except optional update checks via GitHub Releas
 ## Tech Stack
 
 - **Swift 6** + **SwiftUI** (MenuBarExtra)
-- **IOKit** — DDC/CI I2C for hardware brightness/contrast
+- **IOKit** — DDC/CI I2C for hardware brightness
 - **CoreGraphics** — Display enumeration, resolution, arrangement
 - **ColorSync** — ICC color profile management
 - **CGVirtualDisplay** — Virtual display creation (private API, macOS 14+)
-- **CoreDisplay** — Built-in display brightness reading (private API, via dlopen)
+- **DisplayServices** — Built-in display brightness on Apple Silicon (private API, via dlopen)
 - Zero third-party dependencies
 
 ---
@@ -113,8 +118,9 @@ No internet connection required (except optional update checks via GitHub Releas
 ```
 FreeDisplay/
 ├── App/              # AppDelegate, app entry point
-├── Models/           # DisplayInfo, DisplayMode, DisplayPreset
+├── Models/           # DisplayInfo, DisplayMode, DisplayPreset, ArrangementLayout
 ├── Services/         # System-level services (DDC, brightness, resolution, gamma, etc.)
+├── Utilities/        # Small AppKit helpers
 └── Views/            # SwiftUI views for each feature section
 ```
 
@@ -124,11 +130,12 @@ FreeDisplay/
 
 FreeDisplay sits in your menu bar and talks directly to your displays:
 
-- **External monitors**: Uses DDC/CI protocol over I2C (Intel) or IOAVService (Apple Silicon) to control hardware brightness, contrast, and other settings
-- **Built-in display**: Uses CoreGraphics gamma tables for software brightness adjustment
+- **External monitors**: Uses the DDC/CI protocol over I2C (Intel) or IOAVService (Apple Silicon) to control hardware brightness. If a monitor doesn't answer DDC (common with USB-C dongles and docks), FreeDisplay dims it in software through the display's gamma table instead
+- **Built-in display**: Uses the system brightness control (DisplayServices on Apple Silicon, IOKit on Intel)
 - **Brightness keys**: Installs a CGEventTap to intercept keyboard brightness keys and route them to the display under your mouse cursor
-- **Auto brightness**: Polls the built-in display brightness via CoreDisplay private API and proportionally adjusts external displays
-- **HiDPI**: Creates virtual displays via CGVirtualDisplay private API, or writes display override plists for persistent HiDPI
+- **Auto brightness**: Polls the built-in display brightness and proportionally adjusts external displays
+- **Arrangement**: Moves all displays in one configuration change that macOS saves, like System Settings does
+- **HiDPI**: Writes display override plists to `/Library/Displays` so macOS offers HiDPI modes (they appear after the monitor reconnects)
 
 ---
 
@@ -137,7 +144,7 @@ FreeDisplay sits in your menu bar and talks directly to your displays:
 Issues and PRs welcome. This project uses:
 - `xcodegen` for project generation (edit `project.yml`, not `.xcodeproj`)
 - Swift 6 with `SWIFT_STRICT_CONCURRENCY: minimal`
-- MVVM architecture (View → ViewModel → Service)
+- Views → Services (singletons) → system frameworks; see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/LESSONS.md](docs/LESSONS.md) before changing display code
 
 ---
 

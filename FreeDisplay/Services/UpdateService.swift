@@ -12,7 +12,7 @@ final class UpdateService: ObservableObject, @unchecked Sendable {
 
     // Current app bundle version (CFBundleShortVersionString)
     let currentVersion: String = {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.1"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2"
     }()
 
     @Published var latestVersion: String? = nil

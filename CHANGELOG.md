@@ -4,7 +4,7 @@ All notable changes to FreeDisplay are documented here.
 
 ---
 
-## Unreleased
+## v2.2 (2026-10-06)
 
 Display arrangement fix and fixes from a full code review.
 

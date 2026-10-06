@@ -8,7 +8,8 @@ BetterDisplay is a great app, but its best features are locked behind a paid Pro
 
 ---
 
-> maintained by [@hakanotal](https://github.com/hakanotal).
+> maintained by [@hakanotal](https://github.com/hakanotal)   
+
 [!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://buymeacoffee.com/hakantotal)
 
 ---

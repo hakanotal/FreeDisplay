@@ -1,25 +1,28 @@
 # FreeDisplay
 
-> **Free & open-source alternative to [BetterDisplay](https://github.com/waydabber/BetterDisplay)** — all the core display management features, zero cost.
+> **Free & open-source alternative to [BetterDisplay](https://github.com/waydabber/BetterDisplay)**
 
 BetterDisplay is a great app, but its best features are locked behind a paid Pro license. FreeDisplay implements the most essential BetterDisplay features as a completely free, open-source macOS menu bar app.
 
 [Download Latest Release](https://github.com/hakanotal/FreeDisplayTurkish/releases/latest) | [Report an Issue](https://github.com/hakanotal/FreeDisplayTurkish/issues)
 
-> 🇹🇷 **Turkish edition** — maintained by [@hakanotal](https://github.com/hakanotal).
+---
+
+> maintained by [@hakanotal](https://github.com/hakanotal).
+[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://buymeacoffee.com/hakantotal)
 
 ---
 
 ## What's Changed in This Fork
 
-- **Turkish + English UI** — full Turkish translation; switch languages live in Settings → Dil / Language
-- **Night mode** — blue light filter that warms all displays, always on or on a daily schedule
 - **macOS 27 fixes** — menu no longer collapses to just the footer, and it shrinks back when sections collapse
 - **Crash fixes** — brightness/presets, color profiles, resolution fallback and display arrangement no longer crash the app
 - **Color profile** — shows the active profile (e.g. your monitor's own) instead of "Unknown", and updates live; only display-compatible profiles are listed (picking a CMYK/gray profile used to crash)
-- **Auto-restart** — with "Launch at login" on, FreeDisplay relaunches itself after a crash (Quit still quits)
 - **HiDPI** — asks for your password once per monitor instead of on every enable/disable
 - **Cleaner menu** — removed the built-in "Native Mode" / "HiDPI Mode" preset buttons; settings switches right-aligned
+- **Auto-restart** — with "Launch at login" on, FreeDisplay relaunches itself after a crash (Quit still quits)
+- **Night mode** — blue light filter that warms all displays, always on or on a daily schedule
+- **Turkish + English UI** — full Turkish translation; switch languages live in Settings → Dil / Language
 
 ---
 
@@ -140,7 +143,7 @@ Issues and PRs welcome. This project uses:
 ## Contributors
 
 - [@huberdf](https://github.com/huberdf) — original author
-- [@hakanotal](https://github.com/hakanotal) — Turkish translation (Türkçe çeviri)
+- [@hakanotal](https://github.com/hakanotal) 
 
 ---
 

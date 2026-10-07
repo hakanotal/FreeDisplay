@@ -14,6 +14,16 @@ FreeDisplay is the sibling of [FreeAudio](https://github.com/hakanotal/FreeAudio
 
 ---
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/Screenshot-1.png" alt="Main menu: display, presets, combined brightness and tools" width="260" align="top">
+  <img src="docs/Screenshot-2.png" alt="Display panel: brightness, HiDPI mode, display modes, color profile and image adjustments" width="260" align="top">
+  <img src="docs/Screenshot-3.png" alt="Tools expanded: auto brightness, night mode schedule and settings with the language switch" width="260" align="top">
+</p>
+
+---
+
 ## What's Changed in This Fork
 
 - **macOS 27 fixes** — menu no longer collapses to just the footer, and it shrinks back when sections collapse
@@ -57,16 +67,6 @@ FreeDisplay is the sibling of [FreeAudio](https://github.com/hakanotal/FreeAudio
 - Screen streaming / PiP — rarely used, adds complexity
 - EDID override — requires SIP disabled
 - XDR/HDR extra brightness — requires specific hardware
-
----
-
-## Screenshots
-
-<p align="center">
-  <img src="docs/Screenshot-1.png" alt="Main menu: display, presets, combined brightness and tools" width="260" align="top">
-  <img src="docs/Screenshot-2.png" alt="Display panel: brightness, HiDPI mode, display modes, color profile and image adjustments" width="260" align="top">
-  <img src="docs/Screenshot-3.png" alt="Tools expanded: auto brightness, night mode schedule and settings with the language switch" width="260" align="top">
-</p>
 
 ---
 

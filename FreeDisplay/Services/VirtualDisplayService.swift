@@ -17,6 +17,10 @@ final class VirtualDisplayService: ObservableObject, @unchecked Sendable {
         loadConfigs()
     }
 
+    /// Vendor ID of every virtual display FreeDisplay creates. Non-zero is required (0 makes
+    /// `CGVirtualDisplay(descriptor:)` return nil); it also tells them apart from real monitors.
+    nonisolated static let vendorID: UInt32 = 0xEEEE
+
     // MARK: - Config Model
 
     struct VirtualDisplayConfig: Codable, Identifiable, Equatable {
@@ -51,6 +55,8 @@ final class VirtualDisplayService: ObservableObject, @unchecked Sendable {
     /// Releasing an entry causes the virtual display to disappear immediately.
     private var activeDisplayObjects: [UUID: CGVirtualDisplay] = [:]
     private var creatingConfigIDs: Set<UUID> = []
+    /// Creations that were destroyed or deleted while still waiting for WindowServer.
+    private var cancelledConfigIDs: Set<UUID> = []
 
     private let configsKey = "fd.VirtualDisplayConfigs"
 
@@ -60,9 +66,9 @@ final class VirtualDisplayService: ObservableObject, @unchecked Sendable {
         activeConfigIDs.contains(configID)
     }
 
-    /// Returns true if `displayID` is a virtual display managed by this service.
-    func isVirtualDisplay(_ displayID: CGDirectDisplayID) -> Bool {
-        activeDisplayObjects.values.contains { $0.displayID == displayID }
+    /// True while the display for `configID` is being created.
+    func isCreating(_ configID: UUID) -> Bool {
+        creatingConfigIDs.contains(configID)
     }
 
     // MARK: - Create / Destroy
@@ -77,7 +83,11 @@ final class VirtualDisplayService: ObservableObject, @unchecked Sendable {
         // Creation awaits WindowServer; don't start a second display for the same config.
         guard !creatingConfigIDs.contains(config.id) else { return false }
         creatingConfigIDs.insert(config.id)
-        defer { creatingConfigIDs.remove(config.id) }
+        cancelledConfigIDs.remove(config.id)
+        defer {
+            creatingConfigIDs.remove(config.id)
+            cancelledConfigIDs.remove(config.id)
+        }
 
         let w = config.width
         let h = config.height
@@ -94,7 +104,7 @@ final class VirtualDisplayService: ObservableObject, @unchecked Sendable {
         descriptor.maxPixelsWide = UInt32(w)
         descriptor.maxPixelsHigh = UInt32(h)
         descriptor.name = config.name
-        descriptor.vendorID = 0xEEEE  // non-zero required — 0 causes CGVirtualDisplay(descriptor:) to return nil
+        descriptor.vendorID = Self.vendorID
         descriptor.productID = 0x0001
         // Unique and stable per config: macOS derives the display's identity (UUID, saved
         // arrangement and mode) from vendor/product/serial, so a shared serial would make
@@ -139,6 +149,9 @@ final class VirtualDisplayService: ObservableObject, @unchecked Sendable {
         }
         guard applyResult else { return false }
         guard virtualDisplay.displayID != kCGNullDirectDisplay else { return false }
+        // Turned off or deleted while WindowServer was busy: dropping the object here removes
+        // the display instead of leaving one running that no row controls.
+        guard !cancelledConfigIDs.contains(config.id) else { return false }
 
         // Back on main actor — store the strong reference
         activeDisplayObjects[config.id] = virtualDisplay
@@ -149,15 +162,17 @@ final class VirtualDisplayService: ObservableObject, @unchecked Sendable {
     /// Destroys all active virtual displays. Called on app termination to avoid
     /// leaving stale displays registered with WindowServer.
     func destroyAll() {
-        for uuid in activeConfigIDs {
-            activeDisplayObjects.removeValue(forKey: uuid)
-        }
+        cancelledConfigIDs.formUnion(creatingConfigIDs)
+        activeDisplayObjects.removeAll()
         activeConfigIDs.removeAll()
     }
 
     /// Destroys the virtual display associated with `configID`.
     @discardableResult
     func destroy(configID: UUID) -> Bool {
+        if creatingConfigIDs.contains(configID) {
+            cancelledConfigIDs.insert(configID)
+        }
         guard activeDisplayObjects[configID] != nil else {
             return false
         }

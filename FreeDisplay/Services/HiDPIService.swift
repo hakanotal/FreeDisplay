@@ -1,62 +1,86 @@
 import Foundation
 import CoreGraphics
-import IOKit
 
+/// Turns HiDPI (scaled Retina) modes on and off for external displays by editing the
+/// `scale-resolutions` key of the display's override plist in
+/// `/Library/Displays/Contents/Resources/Overrides/`. Other keys in that file (EDID patches,
+/// names from other tools) are kept.
 @MainActor
-final class HiDPIService: @unchecked Sendable {
+final class HiDPIService: ObservableObject, @unchecked Sendable {
     static let shared = HiDPIService()
     private init() {}
+
+    /// The last failed enable/disable per monitor (vendor:product), shown next to its toggle.
+    /// Kept here because the admin prompt usually closes the menu panel.
+    @Published private(set) var lastErrors: [String: String] = [:]
 
     private var refreshTask: Task<Void, Never>?
 
     private let overridesBase = URL(fileURLWithPath: "/Library/Displays/Contents/Resources/Overrides")
+    /// Apple's overrides. A file in /Library replaces the one here for the same monitor, so a
+    /// new file starts as a copy of it.
+    private let systemOverridesBase = URL(fileURLWithPath: "/System/Library/Displays/Contents/Resources/Overrides")
+    private static let scaleResolutionsKey = "scale-resolutions"
 
     // MARK: - Public API
 
-    /// Checks whether HiDPI is enabled for the given display via plist override.
+    /// Whether the display's override plist lists HiDPI scale resolutions.
     func isHiDPIEnabled(vendor: UInt32, product: UInt32) -> Bool {
-        FileManager.default.fileExists(atPath: overridePlistURL(vendor: vendor, product: product).path)
+        readPlist(at: overridePlistURL(vendor: vendor, product: product))?[Self.scaleResolutionsKey] != nil
     }
 
     /// Enables HiDPI for an external display via plist override and clears any opt-out.
     /// macOS picks up the new modes when the display is reconnected.
     /// Returns nil on success, or an error string on failure.
     func enableHiDPI(vendor: UInt32, product: UInt32, nativeWidth: Int, nativeHeight: Int) -> String? {
-        let err = enableHiDPIPlist(vendor: vendor, product: product,
-                                   nativeWidth: nativeWidth, nativeHeight: nativeHeight)
+        let url = overridePlistURL(vendor: vendor, product: product)
+        var plist = readPlist(at: url) ?? readPlist(at: systemOverridePlistURL(vendor: vendor, product: product)) ?? [:]
+        plist[Self.scaleResolutionsKey] = generateScaledModes(nativeWidth: nativeWidth, nativeHeight: nativeHeight)
+        let err = writePlist(plist, to: url, vendor: vendor)
         if err == nil { setOptedOut(false, vendor: vendor, product: product) }
+        record(err, vendor: vendor, product: product)
         return err
     }
 
-    /// Disables HiDPI for an external display by removing the plist override, and remembers
-    /// the choice so auto-enable doesn't turn it back on.
+    /// Disables HiDPI for an external display by removing the scale resolutions from its
+    /// override (the file goes only if nothing else is left), and remembers the choice so
+    /// auto-enable doesn't turn it back on.
     func disableHiDPI(vendor: UInt32, product: UInt32) -> String? {
-        let err = disableHiDPIPlist(vendor: vendor, product: product)
+        let url = overridePlistURL(vendor: vendor, product: product)
+        var err: String?
+        if var plist = readPlist(at: url), plist[Self.scaleResolutionsKey] != nil {
+            plist.removeValue(forKey: Self.scaleResolutionsKey)
+            let systemPlist = readPlist(at: systemOverridePlistURL(vendor: vendor, product: product)) ?? [:]
+            // Nothing of our own left (empty, or just the copy of Apple's file): remove it.
+            if plist.isEmpty || NSDictionary(dictionary: plist).isEqual(to: systemPlist) {
+                err = ensureWritableOverrideDir(vendor: vendor) ?? removeFile(at: url)
+            } else {
+                err = writePlist(plist, to: url, vendor: vendor)
+            }
+        }
         if err == nil { setOptedOut(true, vendor: vendor, product: product) }
+        record(err, vendor: vendor, product: product)
         return err
+    }
+
+    func lastError(vendor: UInt32, product: UInt32) -> String? {
+        lastErrors[monitorKey(vendor: vendor, product: product)]
     }
 
     /// Whether DisplayManager may enable HiDPI on its own: never after the user turned it
     /// off for this monitor, and never when it would need an admin password prompt.
     func allowsAutoEnable(vendor: UInt32, product: UInt32) -> Bool {
-        !optedOutKeys.contains(optOutKey(vendor: vendor, product: product)) && !requiresAdmin(vendor: vendor)
+        !optedOutKeys.contains(monitorKey(vendor: vendor, product: product)) && !requiresAdmin(vendor: vendor)
     }
 
     /// Refreshes availableModes on the given DisplayInfo after enabling HiDPI.
     func refreshModes(for display: DisplayInfo) {
         refreshTask?.cancel()
-        let physicalID = display.displayID
-
         refreshTask = Task {
             try? await Task.sleep(nanoseconds: 500_000_000)
-            async let modes = Task.detached(priority: .userInitiated) {
-                DisplayMode.availableModes(for: physicalID)
-            }.value
-            async let current = Task.detached(priority: .userInitiated) {
-                DisplayMode.currentMode(for: physicalID)
-            }.value
-            display.availableModes = await modes
-            display.currentDisplayMode = await current
+            guard !Task.isCancelled else { return }
+            await display.loadDetails()
+            display.refreshCurrentMode()
         }
     }
 
@@ -74,60 +98,51 @@ final class HiDPIService: @unchecked Sendable {
         UserDefaults.standard.stringArray(forKey: Self.optOutDefaultsKey) ?? []
     }
 
-    private func optOutKey(vendor: UInt32, product: UInt32) -> String {
+    private func monitorKey(vendor: UInt32, product: UInt32) -> String {
         String(format: "%x:%x", vendor, product)
     }
 
     private func setOptedOut(_ optedOut: Bool, vendor: UInt32, product: UInt32) {
-        let key = optOutKey(vendor: vendor, product: product)
+        let key = monitorKey(vendor: vendor, product: product)
         var keys = optedOutKeys.filter { $0 != key }
         if optedOut { keys.append(key) }
         UserDefaults.standard.set(keys, forKey: Self.optOutDefaultsKey)
     }
 
+    private func record(_ error: String?, vendor: UInt32, product: UInt32) {
+        let key = monitorKey(vendor: vendor, product: product)
+        if lastErrors[key] != error { lastErrors[key] = error }
+    }
+
     // MARK: - Plist Override
 
-    private func enableHiDPIPlist(vendor: UInt32, product: UInt32,
-                                   nativeWidth: Int, nativeHeight: Int) -> String? {
-        let plistURL = overridePlistURL(vendor: vendor, product: product)
+    private func readPlist(at url: URL) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any]
+    }
 
-        let scaledModes = generateScaledModes(nativeWidth: nativeWidth, nativeHeight: nativeHeight)
-        let plist: [String: Any] = [
-            "scale-resolutions": scaledModes
-        ]
-
+    private func writePlist(_ plist: [String: Any], to url: URL, vendor: UInt32) -> String? {
         guard let data = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0) else {
             return L("Plist verisi oluşturulamadı", "Failed to generate plist data")
         }
-
         if let err = ensureWritableOverrideDir(vendor: vendor) {
             return err
         }
         do {
-            try data.write(to: plistURL, options: .atomic)
+            try data.write(to: url, options: .atomic)
+            return nil
         } catch {
             return L("Ayar dosyası yazılamadı: \(error.localizedDescription)", "Failed to write override file: \(error.localizedDescription)")
         }
-
-        // Attempt to trigger display mode re-enumeration via IOServiceRequestProbe
-        triggerDisplayReenumeration(vendor: vendor, product: product)
-
-        return nil
     }
 
-    private func disableHiDPIPlist(vendor: UInt32, product: UInt32) -> String? {
-        let plistURL = overridePlistURL(vendor: vendor, product: product)
-        guard FileManager.default.fileExists(atPath: plistURL.path) else { return nil }
-
-        if let err = ensureWritableOverrideDir(vendor: vendor) {
-            return err
-        }
+    private func removeFile(at url: URL) -> String? {
         do {
-            try FileManager.default.removeItem(at: plistURL)
+            try FileManager.default.removeItem(at: url)
+            return nil
         } catch {
             return L("Ayar dosyası silinemedi: \(error.localizedDescription)", "Failed to remove override file: \(error.localizedDescription)")
         }
-        return nil
     }
 
     // MARK: - Helpers
@@ -142,8 +157,9 @@ final class HiDPIService: @unchecked Sendable {
         return executePrivilegedCommand("mkdir -p '\(dirPath)' && chown -R \(getuid()) '\(dirPath)'")
     }
 
-    /// Executes a shell command with administrator privileges via AppleScript.
-    /// Returns nil on success, or an error message on failure.
+    /// Executes a shell command with administrator privileges via AppleScript (on the main
+    /// thread, so the password prompt names FreeDisplay). Returns nil on success, or an error
+    /// message on failure.
     private func executePrivilegedCommand(_ command: String) -> String? {
         let script = """
             do shell script "\(command)" with administrator privileges
@@ -163,53 +179,17 @@ final class HiDPIService: @unchecked Sendable {
         return nil
     }
 
-    private func triggerDisplayReenumeration(vendor: UInt32, product: UInt32) {
-        var iterator: io_iterator_t = 0
-        let matching = IOServiceMatching("IODisplayConnect")
-        guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS else { return }
-        defer { IOObjectRelease(iterator) }
-
-        var service = IOIteratorNext(iterator)
-        while service != 0 {
-            defer {
-                IOObjectRelease(service)
-                service = IOIteratorNext(iterator)
-            }
-
-            guard let cfDict = IODisplayCreateInfoDictionary(service, IOOptionBits(kIODisplayOnlyPreferredName))?.takeRetainedValue() else {
-                continue
-            }
-            let dict = cfDict as NSDictionary
-
-            let serviceVendor: UInt32
-            let serviceProduct: UInt32
-
-            if let v = dict["DisplayVendorID"] as? UInt32 {
-                serviceVendor = v
-            } else if let v = dict["DisplayVendorID"] as? Int {
-                serviceVendor = UInt32(bitPattern: Int32(truncatingIfNeeded: v))
-            } else { continue }
-
-            if let p = dict["DisplayProductID"] as? UInt32 {
-                serviceProduct = p
-            } else if let p = dict["DisplayProductID"] as? Int {
-                serviceProduct = UInt32(bitPattern: Int32(truncatingIfNeeded: p))
-            } else { continue }
-
-            guard serviceVendor == vendor && serviceProduct == product else { continue }
-
-            IOServiceRequestProbe(service, 0)
-            break
-        }
-    }
-
     private func overrideDir(vendor: UInt32) -> URL {
-        overridesBase
-            .appendingPathComponent(String(format: "DisplayVendorID-%x", vendor))
+        overridesBase.appendingPathComponent(String(format: "DisplayVendorID-%x", vendor))
     }
 
     private func overridePlistURL(vendor: UInt32, product: UInt32) -> URL {
-        overrideDir(vendor: vendor)
+        overrideDir(vendor: vendor).appendingPathComponent(String(format: "DisplayProductID-%x", product))
+    }
+
+    private func systemOverridePlistURL(vendor: UInt32, product: UInt32) -> URL {
+        systemOverridesBase
+            .appendingPathComponent(String(format: "DisplayVendorID-%x", vendor))
             .appendingPathComponent(String(format: "DisplayProductID-%x", product))
     }
 
@@ -235,16 +215,8 @@ final class HiDPIService: @unchecked Sendable {
         }
 
         return resolutions.map { (backingW, backingH) in
-            var bytes = [UInt8](repeating: 0, count: 8)
-            bytes[0] = UInt8((backingW >> 24) & 0xFF)
-            bytes[1] = UInt8((backingW >> 16) & 0xFF)
-            bytes[2] = UInt8((backingW >> 8) & 0xFF)
-            bytes[3] = UInt8(backingW & 0xFF)
-            bytes[4] = UInt8((backingH >> 24) & 0xFF)
-            bytes[5] = UInt8((backingH >> 16) & 0xFF)
-            bytes[6] = UInt8((backingH >> 8) & 0xFF)
-            bytes[7] = UInt8(backingH & 0xFF)
-            return Data(bytes)
+            var bigEndian = (UInt32(backingW).bigEndian, UInt32(backingH).bigEndian)
+            return withUnsafeBytes(of: &bigEndian) { Data($0) }
         }
     }
 }

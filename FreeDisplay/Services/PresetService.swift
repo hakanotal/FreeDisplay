@@ -9,6 +9,9 @@ final class PresetService: ObservableObject, @unchecked Sendable {
     @Published var presets: [DisplayPreset] = []
     @Published var isApplying: Bool = false
     @Published var applyingPresetID: UUID? = nil
+    /// The preset whose modes match the current displays (the "Current" badge). Updated by
+    /// DisplayManager after display and mode changes, and here after preset changes.
+    @Published private(set) var currentMatchID: UUID?
 
     private let filename = "presets.json"
 
@@ -20,6 +23,7 @@ final class PresetService: ObservableObject, @unchecked Sendable {
 
     func loadPresets() {
         presets = SettingsService.shared.load([DisplayPreset].self, filename: filename) ?? []
+        updateCurrentMatch()
     }
 
     func savePresets() {
@@ -31,12 +35,14 @@ final class PresetService: ObservableObject, @unchecked Sendable {
     func addPreset(_ preset: DisplayPreset) {
         presets.append(preset)
         savePresets()
+        updateCurrentMatch()
     }
 
     func deletePreset(id: UUID) {
         guard let index = presets.firstIndex(where: { $0.id == id }) else { return }
         presets.remove(at: index)
         savePresets()
+        updateCurrentMatch()
     }
 
     // MARK: - Apply
@@ -50,12 +56,12 @@ final class PresetService: ObservableObject, @unchecked Sendable {
         defer {
             isApplying = false
             applyingPresetID = nil
+            updateCurrentMatch()
         }
 
         let displays = DisplayManagerAccessor.shared.displays
         let matched: [(entry: DisplayPresetEntry, display: DisplayInfo)] = preset.displays.compactMap { entry in
-            guard let display = displays.first(where: { $0.displayUUID == entry.displayUUID }),
-                  display.isOnline else { return nil }
+            guard let display = displays.first(where: { $0.displayUUID == entry.displayUUID }) else { return nil }
             return (entry, display)
         }
 
@@ -73,7 +79,8 @@ final class PresetService: ObservableObject, @unchecked Sendable {
 
         for (entry, display) in matched {
             // Never change the built-in display's resolution or brightness via presets.
-            guard !display.isBuiltin else { continue }
+            // A mirror target's mode follows its source.
+            guard !display.isBuiltin, !display.isMirrorTarget else { continue }
 
             let targetMode = display.availableModes.first(where: {
                 $0.width == entry.width && $0.height == entry.height && $0.isHiDPI == entry.isHiDPI
@@ -96,7 +103,7 @@ final class PresetService: ObservableObject, @unchecked Sendable {
 
             // Brightness is stored 0.0–1.0; BrightnessService uses 0–100.
             if let brightness = entry.brightness {
-                await BrightnessService.shared.setBrightness(brightness * 100.0, for: display, isAutoAdjust: false)
+                BrightnessService.shared.setBrightness(brightness * 100.0, for: display)
             }
         }
 
@@ -123,17 +130,18 @@ final class PresetService: ObservableObject, @unchecked Sendable {
 
     // MARK: - Capture
 
-    /// Snapshots all current online displays into a new preset. The built-in display is
-    /// included for its position only (its mode and brightness are never changed).
+    /// Snapshots all current displays into a new preset. The built-in display is included
+    /// for its position only (its mode and brightness are never changed). FreeDisplay's own
+    /// virtual displays are left out: they come and go with their toggle.
     func captureCurrentState(name: String, icon: String) -> DisplayPreset {
         let displays = DisplayManagerAccessor.shared.displays
         let entries: [DisplayPresetEntry] = displays.compactMap { display in
-            guard display.isOnline, !display.isMirrorTarget else { return nil }
+            guard !display.isMirrorTarget, !display.isVirtual else { return nil }
             let mode = display.currentDisplayMode
             return DisplayPresetEntry(
                 displayUUID: display.displayUUID,
-                width: mode?.width ?? display.pixelWidth,
-                height: mode?.height ?? display.pixelHeight,
+                width: mode?.width ?? display.initialPixelWidth,
+                height: mode?.height ?? display.initialPixelHeight,
                 isHiDPI: mode?.isHiDPI ?? false,
                 brightness: display.isBuiltin ? nil : display.brightness / 100.0,
                 arrangementX: display.bounds.origin.x,
@@ -143,18 +151,19 @@ final class PresetService: ObservableObject, @unchecked Sendable {
         return DisplayPreset(name: name, icon: icon, displays: entries)
     }
 
-    /// Returns the preset ID that matches the current display modes, if any.
-    func currentPresetMatch() -> UUID? {
-        let displays = DisplayManagerAccessor.shared.displays
-        for preset in presets where !preset.displays.isEmpty {
-            let matches = preset.displays.allSatisfy { entry in
-                guard let display = displays.first(where: { $0.displayUUID == entry.displayUUID }),
-                      display.isOnline,
-                      let mode = display.currentDisplayMode else { return false }
+    /// Recomputes `currentMatchID`: the first preset whose every display is connected and in
+    /// the saved mode.
+    func updateCurrentMatch() {
+        let displaysByUUID = Dictionary(
+            DisplayManagerAccessor.shared.displays.map { ($0.displayUUID, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let match = presets.first { preset in
+            !preset.displays.isEmpty && preset.displays.allSatisfy { entry in
+                guard let mode = displaysByUUID[entry.displayUUID]?.currentDisplayMode else { return false }
                 return mode.width == entry.width && mode.height == entry.height && mode.isHiDPI == entry.isHiDPI
             }
-            if matches { return preset.id }
-        }
-        return nil
+        }?.id
+        if currentMatchID != match { currentMatchID = match }
     }
 }

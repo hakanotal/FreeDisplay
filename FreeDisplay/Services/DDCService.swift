@@ -4,14 +4,34 @@ import IOKit
 import IOKit.i2c
 import IOKit.graphics
 
-@_silgen_name("CGDisplayIOServicePort")
-private func CGDisplayIOServicePort(_ display: CGDirectDisplayID) -> io_service_t
+/// An external display DDC may talk to, as CoreGraphics and AppKit see it. Built on the main
+/// thread by DisplayManager (NSScreen is main-only) and handed to DDCService for matching.
+struct DDCCandidate: Sendable, Equatable {
+    let displayID: CGDirectDisplayID
+    let vendor: UInt32
+    let model: UInt32
+    let serial: UInt32
+    /// NSScreen.localizedName, if AppKit knows the display yet.
+    let name: String?
+}
+
+/// What happened to a DDC write.
+enum DDCWriteOutcome: Sendable {
+    case success
+    case failure
+    /// A newer value for the same display and VCP code replaced it before it was sent (or
+    /// while it was being retried). The newer write reports its own outcome.
+    case superseded
+}
 
 /// DDC/CI I2C communication service for external displays.
 /// Supports two hardware paths:
 ///   - ARM64 (Apple Silicon): IOAVService via DCPAVServiceProxy
 ///   - x86_64 (Intel):        IOFramebuffer I2C via IOFBCopyI2CInterfaceForBus
 /// All I2C operations run on a private serial queue to avoid blocking UI.
+///
+/// Writes are coalesced per (display, VCP code): only the latest value is sent, so slider
+/// drags, animations and key repeat never build up a backlog of stale commands.
 final class DDCService: @unchecked Sendable {
     static let shared = DDCService()
 
@@ -20,659 +40,692 @@ final class DDCService: @unchecked Sendable {
 
     private let ddcQueue = DispatchQueue(label: "com.freedisplay.ddc", qos: .userInitiated)
 
-    // MARK: - VCP Read Cache (5-second TTL)
+    /// Attempts per read or write before giving up.
+    private static let maxAttempts = 3
+    /// Minimum spacing between two commands to the same display. DDC/CI monitors silently
+    /// drop commands that arrive faster than this.
+    private static let commandGapNanos: UInt64 = 50_000_000
+    /// How long a VCP read stays cached.
+    private static let cacheTTLNanos: UInt64 = 5_000_000_000
+
+    /// Guards `vcpCache`, `candidates` and the write-coalescing state below.
+    private let lock = NSLock()
+
+    // MARK: - State (guarded by `lock`)
 
     private struct VCPCacheEntry {
         let current: UInt16
         let max: UInt16
-        let timestamp: Date
-        var isExpired: Bool { Date().timeIntervalSince(timestamp) > 5.0 }
+        let timestamp: UInt64
+    }
+
+    private struct WriteKey: Hashable {
+        let displayID: CGDirectDisplayID
+        let vcp: UInt8
+    }
+
+    private struct PendingWrite {
+        var value: UInt16
+        var generation: UInt64
+        var completion: (@Sendable (DDCWriteOutcome) -> Void)?
     }
 
     private var vcpCache: [CGDirectDisplayID: [UInt8: VCPCacheEntry]] = [:]
-    private let cacheLock = NSLock()
+    private var candidates: [DDCCandidate] = []
+    /// The latest value waiting to be written, per display and VCP code.
+    private var pendingWrites: [WriteKey: PendingWrite] = [:]
+    /// Keys with a drain scheduled or running on `ddcQueue`.
+    private var drainingKeys: Set<WriteKey> = []
+    /// Bumped on every write request; a read only caches its result if no write for the
+    /// same key started in the meantime.
+    private var writeGenerations: [WriteKey: UInt64] = [:]
 
-    // MARK: - IOAVService Cache (ARM64 only)
+    // MARK: - State (ddcQueue only)
+
+    private var lastCommandAt: [CGDirectDisplayID: UInt64] = [:]
 
 #if arch(arm64)
-    /// Retained IOAVService per display. Only touched on `ddcQueue`, which also runs every
-    /// I2C transfer, so a service is never released while a transfer is using it.
-    private var avServiceCache: [CGDirectDisplayID: IOAVServiceRef] = [:]
+    /// IOAVService per display, built for all candidates at once (see `rebuildAVMap`).
+    private var avMap: [CGDirectDisplayID: IOAVServiceRef] = [:]
+    /// Uptime when `avMap` was built; 0 = not built. A display missing from a map younger than
+    /// `avMapNegativeTTLNanos` has no service: lookups for it don't re-enumerate IOKit.
+    private var avMapBuiltAt: UInt64 = 0
+    private static let avMapNegativeTTLNanos: UInt64 = 10_000_000_000
 #endif
 
     private init() {}
 
-    // MARK: - ARM64 IOAVService Path
+    private static var now: UInt64 { DispatchTime.now().uptimeNanoseconds }
 
-#if arch(arm64)
-    // MARK: - ARM64 IORegistry-based AVService matching
+    // MARK: - Candidates
 
-    /// Attempts to match an IOAVService (DCPAVServiceProxy) to a CGDirectDisplayID by
-    /// comparing IORegistry properties against CoreGraphics display attributes.
-    ///
-    /// Matching strategy (in order of reliability):
-    ///   1. Walk up the IORegistry parent chain from the DCPAVServiceProxy node to find a node
-    ///      that has both "DisplayVendorID" and "DisplayProductID", then compare against
-    ///      CGDisplayVendorNumber / CGDisplayModelNumber for each external display.
-    ///   2. If no vendor/product match is found, fall back to sorted-index assignment
-    ///      (a console warning is logged when that is ambiguous).
-    ///
-    /// Returns a dictionary mapping each matched external CGDirectDisplayID to its AVService.
-    private func buildAVServiceMap(
-        workingServices: [(service: IOAVServiceRef, ioEntry: io_service_t)]
-    ) -> [CGDirectDisplayID: IOAVServiceRef] {
-        // Collect all external display IDs
-        var displayCount: UInt32 = 0
-        CGGetOnlineDisplayList(0, nil, &displayCount)
-        var displayIDs = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
-        CGGetOnlineDisplayList(displayCount, &displayIDs, &displayCount)
-        let externalIDs = (0..<Int(displayCount))
-            .map { displayIDs[$0] }
-            .filter { CGDisplayIsBuiltin($0) == 0 }
-
-        guard !externalIDs.isEmpty else { return [:] }
-
-        var result: [CGDirectDisplayID: IOAVServiceRef] = [:]
-        var unmatchedServices: [(service: IOAVServiceRef, ioEntry: io_service_t)] = []
-
-        // Strategy 1: IORegistry property matching
-        for entry in workingServices {
-            guard let matched = matchAVServiceToDisplay(
-                ioEntry: entry.ioEntry,
-                candidates: externalIDs,
-                alreadyMapped: Set(result.keys)
-            ) else {
-                unmatchedServices.append(entry)
-                continue
-            }
-            result[matched] = entry.service
-            #if DEBUG
-            print("[DDCService] ARM64: IORegistry matched AVService to display \(matched) (vendor/product)")
-            #endif
-        }
-
-        // Strategy 2: Index fallback for any remaining unmatched services/displays
-        let unmappedIDs = externalIDs.filter { result[$0] == nil }.sorted()
-        if !unmatchedServices.isEmpty && !unmappedIDs.isEmpty {
-            #if DEBUG
-            if unmappedIDs.count > 1 {
-                print("[DDCService] WARNING: Multiple external displays: DDC may target wrong monitor (IORegistry matching failed)")
-            }
-            #endif
-            for (idx, extID) in unmappedIDs.enumerated() where idx < unmatchedServices.count {
-                result[extID] = unmatchedServices[idx].service
-                #if DEBUG
-                print("[DDCService] ARM64: index fallback mapped AVService[\(idx)] to display \(extID)")
-                #endif
-            }
-        }
-
-        return result
-    }
-
-    /// Walks up the IORegistry parent chain from `ioEntry` looking for a node
-    /// that has both "DisplayVendorID" and "DisplayProductID" properties.
-    /// Returns the CGDirectDisplayID from `candidates` whose vendor+model matches,
-    /// excluding any IDs already in `alreadyMapped`.
-    private func matchAVServiceToDisplay(
-        ioEntry: io_service_t,
-        candidates: [CGDirectDisplayID],
-        alreadyMapped: Set<CGDirectDisplayID>
-    ) -> CGDirectDisplayID? {
-        // Build the ancestor chain (up to 8 levels) including the entry itself
-        var chain: [io_service_t] = []
-        var current = ioEntry
-        IOObjectRetain(current)
-        chain.append(current)
-
-        for _ in 0..<7 {
-            var parent: io_service_t = 0
-            guard IORegistryEntryGetParentEntry(current, kIOServicePlane, &parent) == KERN_SUCCESS,
-                  parent != IO_OBJECT_NULL else { break }
-            chain.append(parent)
-            current = parent
-        }
-        defer { chain.forEach { IOObjectRelease($0) } }
-
-        for node in chain {
-            guard let cfProps = ioRegistryEntryProperties(node) else { continue }
-            let props = cfProps.takeRetainedValue() as? [String: Any] ?? [:]
-
-            // Extract vendor and product IDs from this node
-            let nodeVendor: UInt32?
-            let nodeProduct: UInt32?
-
-            if let v = props["DisplayVendorID"] as? UInt32 { nodeVendor = v }
-            else if let v = props["DisplayVendorID"] as? Int { nodeVendor = UInt32(bitPattern: Int32(truncatingIfNeeded: v)) }
-            else { nodeVendor = nil }
-
-            if let p = props["DisplayProductID"] as? UInt32 { nodeProduct = p }
-            else if let p = props["DisplayProductID"] as? Int { nodeProduct = UInt32(bitPattern: Int32(truncatingIfNeeded: p)) }
-            else { nodeProduct = nil }
-
-            guard let vendor = nodeVendor, let product = nodeProduct else { continue }
-
-            // Find a candidate display whose vendor+model matches
-            for dispID in candidates {
-                guard !alreadyMapped.contains(dispID) else { continue }
-                if CGDisplayVendorNumber(dispID) == vendor && CGDisplayModelNumber(dispID) == product {
-                    return dispID
-                }
-            }
-        }
-
-        return nil
-    }
-
-    /// Wraps IORegistryEntryCreateCFProperties to return an optional Unmanaged<CFDictionary>.
-    private func ioRegistryEntryProperties(_ entry: io_service_t) -> Unmanaged<CFDictionary>? {
-        var props: Unmanaged<CFMutableDictionary>? = nil
-        let kr = IORegistryEntryCreateCFProperties(entry, &props, kCFAllocatorDefault, 0)
-        guard kr == KERN_SUCCESS, let p = props else { return nil }
-        // CFMutableDictionary is toll-free bridged to CFDictionary
-        return unsafeBitCast(p, to: Unmanaged<CFDictionary>.self)
-    }
-
-    /// Finds the IOAVService for the given display. Caches the result per display.
-    /// Returns nil if no working AVService is found (built-in displays, or displays
-    /// that don't support DDC over the Apple Silicon AV path). Call on `ddcQueue` only.
-    ///
-    /// Matching strategy: IORegistry vendor/product property matching first,
-    /// falling back to sorted-index assignment if properties are unavailable.
-    private func findAVService(for displayID: CGDirectDisplayID) -> IOAVServiceRef? {
-        if let cached = avServiceCache[displayID] {
-            return cached
-        }
-
-        // Slow path: enumerate all DCPAVServiceProxy nodes in the IOKit registry.
-        var iterator: io_iterator_t = 0
-        guard IOServiceGetMatchingServices(
-            kIOMainPortDefault,
-            IOServiceMatching("DCPAVServiceProxy"),
-            &iterator
-        ) == KERN_SUCCESS else { return nil }
-        defer { IOObjectRelease(iterator) }
-
-        // Collect (AVService, io_service_t) pairs for IORegistry property matching.
-        // We retain each io_service_t so we can walk its parent chain after the iterator moves on.
-        var workingPairs: [(service: IOAVServiceRef, ioEntry: io_service_t)] = []
-
-        var service = IOIteratorNext(iterator)
-        while service != IO_OBJECT_NULL {
-            // Only consider external displays
-            if let locationProp = IORegistryEntryCreateCFProperty(
-                service, "Location" as CFString, kCFAllocatorDefault, 0
-            )?.takeRetainedValue() as? String {
-                guard locationProp == "External" else {
-                    IOObjectRelease(service)
-                    service = IOIteratorNext(iterator)
-                    continue
-                }
-            }
-            // Note: some drivers omit the "Location" key entirely; still attempt those.
-
-            guard let avService = IOAVServiceCreateWithService(kCFAllocatorDefault, service) else {
-                IOObjectRelease(service)
-                service = IOIteratorNext(iterator)
-                continue
-            }
-
-            // Verify the service responds to I2C reads (confirms it's a usable DDC path)
-            var testBuf = [UInt8](repeating: 0, count: 32)
-            let ret = IOAVServiceReadI2C(avService, 0x37, 0x51, &testBuf, 32)
-            if ret == kIOReturnSuccess {
-                // Retain io_service_t so we can walk its parent chain in buildAVServiceMap
-                IOObjectRetain(service)
-                workingPairs.append((service: avService, ioEntry: service))
-            } else {
-                // IOAVServiceCreateWithService follows the Create rule; an unusable service
-                // isn't stored anywhere, so release it instead of leaking one per probe.
-                releaseAVService(avService)
-            }
-            IOObjectRelease(service)
-            service = IOIteratorNext(iterator)
-        }
-
-        guard !workingPairs.isEmpty else {
-            #if DEBUG
-            print("[DDCService] ARM64: no IOAVService found for display \(displayID)")
-            #endif
-            return nil
-        }
-
-        // Build the display→AVService map using IORegistry matching
-        let serviceMap = buildAVServiceMap(workingServices: workingPairs)
-
-        // Release the retained io_service_t entries now that mapping is done
-        for pair in workingPairs {
-            IOObjectRelease(pair.ioEntry)
-        }
-
-        // Cache the matched services (releasing any they replace) and release the rest:
-        // every enumeration creates new service objects.
-        let used = Set(serviceMap.values)
-        for (extID, avService) in serviceMap {
-            if let old = avServiceCache[extID], old != avService {
-                releaseAVService(old)
-            }
-            avServiceCache[extID] = avService
-        }
-        for pair in workingPairs where !used.contains(pair.service) {
-            releaseAVService(pair.service)
-        }
-
-        let result = avServiceCache[displayID]
-        #if DEBUG
-        if result != nil {
-            print("[DDCService] ARM64: found IOAVService for display \(displayID)")
-        } else {
-            print("[DDCService] ARM64: no IOAVService found for display \(displayID)")
-        }
-        #endif
-        return result
-    }
-
-    private func releaseAVService(_ service: IOAVServiceRef) {
-        Unmanaged<AnyObject>.fromOpaque(UnsafeRawPointer(service)).release()
-    }
-
-    /// Drops (and releases) the cached IOAVService for the given display, e.g. after it was
-    /// disconnected or the system woke up. Runs on `ddcQueue` so it can't race a transfer.
-    func invalidateAVServiceCache(for displayID: CGDirectDisplayID) {
-        ddcQueue.async {
-            if let service = self.avServiceCache.removeValue(forKey: displayID) {
-                self.releaseAVService(service)
-            }
-        }
-    }
-
-    /// ARM64 DDC write: send a Set VCP command via IOAVService.
-    /// Buffer layout (bytes sent after the device address / offset arguments):
-    ///   [0x84, 0x03, vcpCode, valueHigh, valueLow, checksum]
-    private func arm64Write(displayID: CGDirectDisplayID, command: UInt8, value: UInt16) -> Bool {
-        guard let avService = findAVService(for: displayID) else { return false }
-
-        let valueHigh = UInt8((value >> 8) & 0xFF)
-        let valueLow  = UInt8(value & 0xFF)
-        // Checksum: 0x6E (display address) XOR 0x51 (host source address, sent by
-        // IOAVServiceWriteI2C as the data address) XOR every payload byte.
-        var checksum  = UInt8(0x6E ^ 0x51)
-        let payload: [UInt8] = [0x84, 0x03, command, valueHigh, valueLow]
-        for b in payload { checksum ^= b }
-
-        var buf: [UInt8] = payload + [checksum]
-        let ret = IOAVServiceWriteI2C(avService, 0x37, 0x51, &buf, UInt32(buf.count))
-        #if DEBUG
-        if ret == kIOReturnSuccess {
-            print("[DDCService] ARM64 write VCP 0x\(String(command, radix: 16)) = \(value) OK")
-        } else {
-            print("[DDCService] ARM64 write VCP 0x\(String(command, radix: 16)) failed: \(ret)")
-        }
-        #endif
-        return ret == kIOReturnSuccess
-    }
-
-    /// ARM64 DDC read: send a Get VCP request then read the response via IOAVService.
-    /// Request layout: [0x82, 0x01, vcpCode, checksum]
-    /// Reply bytes 6-9 carry: [maxHigh, maxLow, curHigh, curLow] (validated below)
-    private func arm64Read(displayID: CGDirectDisplayID, command: UInt8) -> (current: UInt16, max: UInt16)? {
-        guard let avService = findAVService(for: displayID) else { return nil }
-
-        // Build and send the VCP Get Request packet
-        var requestChecksum = UInt8(0x6E ^ 0x51)
-        let requestPayload: [UInt8] = [0x82, 0x01, command]
-        for b in requestPayload { requestChecksum ^= b }
-        var requestBuf: [UInt8] = requestPayload + [requestChecksum]
-
-        let writeRet = IOAVServiceWriteI2C(avService, 0x37, 0x51, &requestBuf, UInt32(requestBuf.count))
-        guard writeRet == kIOReturnSuccess else {
-            #if DEBUG
-            print("[DDCService] ARM64 read request failed for VCP 0x\(String(command, radix: 16)): \(writeRet)")
-            #endif
-            return nil
-        }
-
-        // Wait for the display to prepare its DDC/CI reply (~40ms per spec)
-        Thread.sleep(forTimeInterval: 0.04)
-
-        // Read the VCP reply
-        var replyBuf = [UInt8](repeating: 0, count: 12)
-        let readRet = IOAVServiceReadI2C(avService, 0x37, 0x51, &replyBuf, UInt32(replyBuf.count))
-        guard readRet == kIOReturnSuccess else {
-            #if DEBUG
-            print("[DDCService] ARM64 read reply failed for VCP 0x\(String(command, radix: 16)): \(readRet)")
-            #endif
-            return nil
-        }
-
-        // DDC/CI VCP reply format (IOAVService variant):
-        //   replyBuf[0] = source address (0x6E)
-        //   replyBuf[1] = length byte (0x88 = 0x80 | 8)
-        //   replyBuf[2] = 0x02 (Get VCP Feature Reply opcode)
-        //   replyBuf[3] = result code (0x00 = no error, 0x01 = unsupported VCP code)
-        //   replyBuf[4] = VCP opcode echo
-        //   replyBuf[5] = VCP type code
-        //   replyBuf[6] = max value high byte
-        //   replyBuf[7] = max value low byte
-        //   replyBuf[8] = current value high byte
-        //   replyBuf[9] = current value low byte
-        //  replyBuf[10] = checksum: 0x50 (host address) XOR bytes 0…9
-        // Anything else is a NAK, a stale reply or line noise; reading values out of it would
-        // report a bogus brightness, so reject it (readAsync retries).
-        var replyChecksum: UInt8 = 0x50
-        for b in replyBuf[0..<10] { replyChecksum ^= b }
-        guard replyBuf[2] == 0x02, replyBuf[3] == 0x00, replyBuf[4] == command,
-              replyChecksum == replyBuf[10] else {
-            #if DEBUG
-            print("[DDCService] ARM64 invalid reply for VCP 0x\(String(command, radix: 16)): \(replyBuf.map { String(format: "%02X", $0) }.joined(separator: " "))")
-            #endif
-            return nil
-        }
-
-        let maxVal = (UInt16(replyBuf[6]) << 8) | UInt16(replyBuf[7])
-        let curVal = (UInt16(replyBuf[8]) << 8) | UInt16(replyBuf[9])
-        #if DEBUG
-        print("[DDCService] ARM64 read VCP 0x\(String(command, radix: 16)): cur=\(curVal) max=\(maxVal)")
-        #endif
-        return (current: curVal, max: maxVal)
-    }
-#endif
-
-    // MARK: - Intel (x86_64) IOFramebuffer Path
-
-    /// Finds the IOFramebuffer service for a given external display.
-    /// Returns a retained io_service_t — caller must IOObjectRelease.
-    private func framebufferService(for displayID: CGDirectDisplayID) -> io_service_t? {
-        // Strategy 1: Use CGDisplayIOServicePort (deprecated but functional on macOS 15)
-        let servicePort = CGDisplayIOServicePort(displayID)
-        if servicePort != MACH_PORT_NULL && servicePort != 0 {
-            var parent: io_service_t = 0
-            if IORegistryEntryGetParentEntry(servicePort, kIOServicePlane, &parent) == KERN_SUCCESS, parent != 0 {
-                return parent
-            }
-        }
-
-        // Strategy 2: Fallback to vendor+model matching
-        let vendor = CGDisplayVendorNumber(displayID)
-        let model  = CGDisplayModelNumber(displayID)
-
-        var iter: io_iterator_t = 0
-        guard IOServiceGetMatchingServices(
-            kIOMainPortDefault,
-            IOServiceMatching("IODisplayConnect"),
-            &iter
-        ) == KERN_SUCCESS else { return nil }
-        defer { IOObjectRelease(iter) }
-
-        var service = IOIteratorNext(iter)
-        while service != 0 {
-            defer { IOObjectRelease(service); service = IOIteratorNext(iter) }
-
-            guard let cfDict = IODisplayCreateInfoDictionary(
-                service,
-                IOOptionBits(kIODisplayOnlyPreferredName)
-            )?.takeRetainedValue() as? NSDictionary else { continue }
-
-            // Extract vendor and model IDs (may be stored as UInt32 or Int)
-            let sVendor: UInt32
-            let sModel: UInt32
-            if let v = cfDict["DisplayVendorID"] as? UInt32 { sVendor = v }
-            else if let v = cfDict["DisplayVendorID"] as? Int {
-                sVendor = UInt32(bitPattern: Int32(truncatingIfNeeded: v))
-            } else { continue }
-
-            if let m = cfDict["DisplayProductID"] as? UInt32 { sModel = m }
-            else if let m = cfDict["DisplayProductID"] as? Int {
-                sModel = UInt32(bitPattern: Int32(truncatingIfNeeded: m))
-            } else { continue }
-
-            guard sVendor == vendor && sModel == model else { continue }
-
-            // Walk up to parent IOFramebuffer
-            var parent: io_service_t = 0
-            guard IORegistryEntryGetParentEntry(service, kIOServicePlane, &parent) == KERN_SUCCESS,
-                  parent != 0 else { continue }
-            // Caller must release parent
-            return parent
-        }
-        return nil
-    }
-
-    // MARK: - DDC Checksum (Intel path)
-
-    /// Computes DDC/CI checksum: XOR of destination address + all buffer bytes.
-    private func ddcChecksum(destAddress: UInt8, bytes: [UInt8]) -> UInt8 {
-        var cs: UInt8 = destAddress
-        for b in bytes { cs ^= b }
-        return cs
-    }
-
-    // MARK: - Synchronous DDC I/O (called on ddcQueue)
-
-    /// Synchronous DDC write (VCP Set). Returns true on success.
-    /// On ARM64 uses the IOAVService path; on x86_64 uses the IOFramebuffer I2C path.
-    private func writeSynchronous(displayID: CGDirectDisplayID, command: UInt8, value: UInt16) -> Bool {
-#if arch(arm64)
-        // ARM64 primary path
-        if arm64Write(displayID: displayID, command: command, value: value) {
+    /// Sets the external displays DDC may address. Called by DisplayManager after every
+    /// display refresh; a change drops the service map so it is rebuilt for the new set.
+    func updateCandidates(_ newCandidates: [DDCCandidate]) {
+        let changed = lock.withLock { () -> Bool in
+            guard candidates != newCandidates else { return false }
+            candidates = newCandidates
             return true
         }
-        #if DEBUG
-        print("[DDCService] writeSynchronous ARM64: failed for display \(displayID) VCP 0x\(String(command, radix: 16))")
-        #endif
-        return false
-#else
-        // Intel fallback path
-        return intelWriteSynchronous(displayID: displayID, command: command, value: value)
-#endif
-    }
-
-    /// Synchronous DDC read (VCP Get). Returns (current, max) or nil on failure.
-    private func readSynchronous(displayID: CGDirectDisplayID, command: UInt8) -> (current: UInt16, max: UInt16)? {
 #if arch(arm64)
-        return arm64Read(displayID: displayID, command: command)
-#else
-        return intelReadSynchronous(displayID: displayID, command: command)
+        if changed {
+            ddcQueue.async { self.invalidateAVMap() }
+        }
 #endif
-    }
-
-    // MARK: - Intel Write/Read (renamed from original writeSynchronous/readSynchronous)
-
-    private func intelWriteSynchronous(displayID: CGDirectDisplayID, command: UInt8, value: UInt16) -> Bool {
-        guard let fb = framebufferService(for: displayID) else {
-            #if DEBUG
-            print("[DDCService] intelWrite: no framebuffer for display \(displayID)")
-            #endif
-            return false
-        }
-        defer { IOObjectRelease(fb) }
-
-        // Try all I2C buses (DDC bus is not always bus 0)
-        for busIndex: UInt32 in 0..<8 {
-            var iface: io_service_t = 0
-            guard IOFBCopyI2CInterfaceForBus(fb, busIndex, &iface) == KERN_SUCCESS else { continue }
-            defer { IOObjectRelease(iface) }
-
-            var conn: IOI2CConnectRef?
-            guard IOI2CInterfaceOpen(iface, IOOptionBits(0), &conn) == KERN_SUCCESS,
-                  let conn = conn else { continue }
-            defer { IOI2CInterfaceClose(conn, IOOptionBits(0)) }
-
-            // Build DDC/CI Set VCP packet:
-            // [0x51, 0x84, 0x03, VCP, val_hi, val_lo, checksum]
-            var buf: [UInt8] = [
-                0x51,
-                0x84,
-                0x03,
-                command,
-                UInt8(value >> 8),
-                UInt8(value & 0xFF)
-            ]
-            buf.append(ddcChecksum(destAddress: 0x6E, bytes: buf))
-            let bufCount = buf.count
-
-            let ok = buf.withUnsafeMutableBytes { raw -> Bool in
-                guard let ptr = raw.baseAddress else { return false }
-                var req = IOI2CRequest()
-                req.commFlags           = 0
-                req.sendAddress         = 0x6E
-                req.sendTransactionType = IOOptionBits(kIOI2CSimpleTransactionType)
-                req.sendSubAddress      = 0
-                req.sendBuffer          = UInt(bitPattern: ptr)
-                req.sendBytes           = UInt32(bufCount)
-                req.replyTransactionType = IOOptionBits(kIOI2CNoTransactionType)
-                req.replyBytes          = 0
-                req.minReplyDelay       = 10_000_000 // 10ms
-                let kr = IOI2CSendRequest(conn, IOOptionBits(0), &req)
-                return kr == KERN_SUCCESS && req.result == KERN_SUCCESS
-            }
-            if ok {
-                #if DEBUG
-                print("[DDCService] Intel write VCP 0x\(String(command, radix:16)) = \(value) on bus \(busIndex) OK")
-                #endif
-                return true
-            }
-        }
-        #if DEBUG
-        print("[DDCService] intelWrite: all buses failed for display \(displayID) VCP 0x\(String(command, radix:16))")
-        #endif
-        return false
-    }
-
-    private func intelReadSynchronous(displayID: CGDirectDisplayID, command: UInt8) -> (current: UInt16, max: UInt16)? {
-        guard let fb = framebufferService(for: displayID) else { return nil }
-        defer { IOObjectRelease(fb) }
-
-        // Try all I2C buses
-        for busIndex: UInt32 in 0..<8 {
-            var iface: io_service_t = 0
-            guard IOFBCopyI2CInterfaceForBus(fb, busIndex, &iface) == KERN_SUCCESS else { continue }
-            defer { IOObjectRelease(iface) }
-
-            var conn: IOI2CConnectRef?
-            guard IOI2CInterfaceOpen(iface, IOOptionBits(0), &conn) == KERN_SUCCESS,
-                  let conn = conn else { continue }
-            defer { IOI2CInterfaceClose(conn, IOOptionBits(0)) }
-
-            // Build DDC/CI Get VCP request:
-            // [0x51, 0x82, 0x01, VCP, checksum]
-            var sendBuf: [UInt8] = [0x51, 0x82, 0x01, command]
-            sendBuf.append(ddcChecksum(destAddress: 0x6E, bytes: sendBuf))
-
-            var replyBuf = [UInt8](repeating: 0, count: 12)
-            var result: (current: UInt16, max: UInt16)? = nil
-
-            let sendCount  = sendBuf.count
-            let replyCount = replyBuf.count
-
-            sendBuf.withUnsafeMutableBytes { sendRaw in
-                replyBuf.withUnsafeMutableBytes { replyRaw in
-                    guard let sp = sendRaw.baseAddress,
-                          let rp = replyRaw.baseAddress else { return }
-
-                    var req = IOI2CRequest()
-                    req.commFlags           = 0
-                    req.sendAddress         = 0x6E
-                    req.sendTransactionType = IOOptionBits(kIOI2CSimpleTransactionType)
-                    req.sendSubAddress      = 0
-                    req.sendBuffer          = UInt(bitPattern: sp)
-                    req.sendBytes           = UInt32(sendCount)
-                    req.replyAddress        = 0x6F
-                    req.replyTransactionType = IOOptionBits(kIOI2CDDCciReplyTransactionType)
-                    req.replySubAddress     = 0
-                    req.replyBuffer         = UInt(bitPattern: rp)
-                    req.replyBytes          = UInt32(replyCount)
-                    req.minReplyDelay       = 50_000_000 // 50ms
-
-                    guard IOI2CSendRequest(conn, IOOptionBits(0), &req) == KERN_SUCCESS,
-                          req.result == KERN_SUCCESS else { return }
-
-                    // DDC/CI VCP reply layout:
-                    // [0x6E, 0x88, 0x02, errCode, VCPcode, type, max_hi, max_lo, cur_hi, cur_lo, chk]
-                    let rb = replyRaw.bindMemory(to: UInt8.self)
-                    let maxVal = (UInt16(rb[6]) << 8) | UInt16(rb[7])
-                    let curVal = (UInt16(rb[8]) << 8) | UInt16(rb[9])
-                    result = (current: curVal, max: maxVal)
-                }
-            }
-            if let r = result { return r }
-        }
-        return nil
     }
 
     // MARK: - Cache Cleanup
 
-    /// Removes all cached VCP entries and the cached AV service for a display (after it
-    /// was disconnected, or after wake when services may have been recreated).
+    /// Forgets everything about a display: cached reads, queued writes (reported as
+    /// superseded) and its IOAVService (all services are re-matched on next use). Called when
+    /// a display is removed and after wake, when services may have been recreated.
     func clearCache(for displayID: CGDirectDisplayID) {
-        cacheLock.lock()
-        vcpCache.removeValue(forKey: displayID)
-        cacheLock.unlock()
+        let dropped = lock.withLock { () -> [(@Sendable (DDCWriteOutcome) -> Void)] in
+            vcpCache.removeValue(forKey: displayID)
+            var completions: [(@Sendable (DDCWriteOutcome) -> Void)] = []
+            for key in pendingWrites.keys where key.displayID == displayID {
+                if let completion = pendingWrites.removeValue(forKey: key)?.completion {
+                    completions.append(completion)
+                }
+            }
+            return completions
+        }
+        dropped.forEach { $0(.superseded) }
+        ddcQueue.async {
+            self.lastCommandAt.removeValue(forKey: displayID)
 #if arch(arm64)
-        invalidateAVServiceCache(for: displayID)
+            self.invalidateAVMap()
 #endif
+        }
     }
 
-    // MARK: - Public Async API (with retry)
+    // MARK: - Public Async API
 
-    /// Asynchronously write a VCP value, retrying up to 3 times.
-    /// Invalidates the cache for the written VCP code on success.
-    /// `completion` runs on the DDC queue. It is `@Sendable` so callers on the main actor
-    /// don't get an implicitly main-isolated closure (Swift 6 traps when that runs off-main).
+    /// Writes a VCP value. If a write for the same display and code is still waiting, its
+    /// value is replaced (its completion gets `.superseded`); only the latest value is sent.
+    /// Retries up to 3 times. `completion` runs exactly once, on the DDC queue or the
+    /// calling thread. It is `@Sendable` so callers on the main actor don't get an implicitly
+    /// main-isolated closure (Swift 6 traps when that runs off-main).
     func writeAsync(
         displayID: CGDirectDisplayID,
         command: UInt8,
         value: UInt16,
-        completion: (@Sendable (Bool) -> Void)? = nil
+        completion: (@Sendable (DDCWriteOutcome) -> Void)? = nil
     ) {
-        ddcQueue.async {
-            for attempt in 0..<3 {
-                if self.writeSynchronous(displayID: displayID, command: command, value: value) {
-                    // Invalidate cached value so next read reflects the new setting.
-                    self.cacheLock.lock()
-                    self.vcpCache[displayID]?[command] = nil
-                    self.cacheLock.unlock()
-                    completion?(true)
-                    return
-                }
-                if attempt < 2 { Thread.sleep(forTimeInterval: 0.05) }
-            }
-            completion?(false)
+        let key = WriteKey(displayID: displayID, vcp: command)
+        let (superseded, schedule) = lock.withLock { () -> ((@Sendable (DDCWriteOutcome) -> Void)?, Bool) in
+            let generation = (writeGenerations[key] ?? 0) &+ 1
+            writeGenerations[key] = generation
+            let previous = pendingWrites[key]?.completion
+            pendingWrites[key] = PendingWrite(value: value, generation: generation, completion: completion)
+            // The cached value is about to be wrong.
+            vcpCache[displayID]?[command] = nil
+            return (previous, drainingKeys.insert(key).inserted)
+        }
+        superseded?(.superseded)
+        if schedule {
+            ddcQueue.async { self.drainWrite(key) }
         }
     }
 
-    /// Asynchronously read a VCP value.
-    /// Returns a cached result if available and not expired (5-second TTL).
+    /// Reads a VCP value. Returns a cached result if it is younger than 5 s. A read that
+    /// overlaps a write to the same code returns nil instead of a value that may predate it.
     /// `completion` runs on the DDC queue (or synchronously on a cache hit); see `writeAsync`.
     func readAsync(
         displayID: CGDirectDisplayID,
         command: UInt8,
         completion: @escaping @Sendable ((current: UInt16, max: UInt16)?) -> Void
     ) {
-        // Fast path: return cached value if still fresh
-        cacheLock.lock()
-        if let entry = vcpCache[displayID]?[command], !entry.isExpired {
-            cacheLock.unlock()
-            completion((current: entry.current, max: entry.max))
+        let key = WriteKey(displayID: displayID, vcp: command)
+        let (cached, generation) = lock.withLock { () -> ((current: UInt16, max: UInt16)?, UInt64) in
+            let generation = writeGenerations[key] ?? 0
+            guard pendingWrites[key] == nil,
+                  let entry = vcpCache[displayID]?[command],
+                  Self.now - entry.timestamp < Self.cacheTTLNanos else { return (nil, generation) }
+            return ((entry.current, entry.max), generation)
+        }
+        if let cached {
+            completion(cached)
             return
         }
-        cacheLock.unlock()
 
         ddcQueue.async {
-            for attempt in 0..<3 {
-                if let r = self.readSynchronous(displayID: displayID, command: command) {
-                    self.cacheLock.lock()
-                    if self.vcpCache[displayID] == nil { self.vcpCache[displayID] = [:] }
-                    self.vcpCache[displayID]![command] = VCPCacheEntry(
-                        current: r.current, max: r.max, timestamp: Date()
-                    )
-                    self.cacheLock.unlock()
-                    completion(r)
-                    return
+            var reply: (current: UInt16, max: UInt16)?
+            for _ in 0..<Self.maxAttempts {
+                if self.isWritePending(key) { break }
+                self.waitForCommandGap(displayID)
+                let result = self.readSynchronous(displayID: displayID, command: command)
+                self.lastCommandAt[displayID] = Self.now
+                if case .value(let value) = result {
+                    reply = value
+                    break
                 }
-                if attempt < 2 { Thread.sleep(forTimeInterval: 0.05) }
+                if case .noService = result { break }
             }
-            completion(nil)
+            let accepted = self.lock.withLock { () -> (current: UInt16, max: UInt16)? in
+                guard let reply, (self.writeGenerations[key] ?? 0) == generation,
+                      self.pendingWrites[key] == nil else { return nil }
+                self.vcpCache[displayID, default: [:]][command] = VCPCacheEntry(
+                    current: reply.current, max: reply.max, timestamp: Self.now
+                )
+                return reply
+            }
+            completion(accepted)
         }
+    }
+
+    /// Async wrapper around `readAsync`.
+    func read(displayID: CGDirectDisplayID, command: UInt8) async -> (current: UInt16, max: UInt16)? {
+        await withCheckedContinuation { continuation in
+            readAsync(displayID: displayID, command: command) { continuation.resume(returning: $0) }
+        }
+    }
+
+    // MARK: - Write coalescing (ddcQueue)
+
+    private func isWritePending(_ key: WriteKey) -> Bool {
+        lock.withLock { pendingWrites[key] != nil }
+    }
+
+    private func isStale(_ key: WriteKey, generation: UInt64) -> Bool {
+        lock.withLock { pendingWrites[key].map { $0.generation != generation } ?? true }
+    }
+
+    private func drainWrite(_ key: WriteKey) {
+        // Taking the job and clearing `drainingKeys` in one critical section means a write
+        // that arrives right after always schedules a new drain.
+        guard let job = lock.withLock({ () -> (value: UInt16, generation: UInt64)? in
+            guard let pending = pendingWrites[key] else {
+                drainingKeys.remove(key)
+                return nil
+            }
+            return (pending.value, pending.generation)
+        }) else { return }
+
+        var succeeded = false
+        for attempt in 0..<Self.maxAttempts {
+            waitForCommandGap(key.displayID)
+            let result = writeSynchronous(displayID: key.displayID, command: key.vcp, value: job.value)
+            lastCommandAt[key.displayID] = Self.now
+            if case .value = result {
+                succeeded = true
+                break
+            }
+            if case .noService = result, attempt > 0 { break }
+            // Don't keep retrying a value the user has already moved past.
+            if isStale(key, generation: job.generation) { break }
+#if arch(arm64)
+            // The display's proxy may have been recreated (reconnect, wake): re-match once.
+            if attempt == 0 { invalidateAVMap() }
+#endif
+        }
+
+        let completion = lock.withLock { () -> (@Sendable (DDCWriteOutcome) -> Void)?? in
+            guard let pending = pendingWrites[key], pending.generation == job.generation else {
+                return nil   // a newer value is waiting
+            }
+            pendingWrites[key] = nil
+            drainingKeys.remove(key)
+            return .some(pending.completion)
+        }
+        if let completion {
+            completion?(succeeded ? .success : .failure)
+        } else {
+            // Re-dispatch instead of looping so queued reads get a turn in between.
+            ddcQueue.async { self.drainWrite(key) }
+        }
+    }
+
+    private func waitForCommandGap(_ displayID: CGDirectDisplayID) {
+        guard let last = lastCommandAt[displayID] else { return }
+        let elapsed = Self.now - last
+        if elapsed < Self.commandGapNanos {
+            Thread.sleep(forTimeInterval: Double(Self.commandGapNanos - elapsed) / 1e9)
+        }
+    }
+
+    // MARK: - Reply parsing
+
+    /// Validates a DDC/CI Get VCP Feature reply and extracts (current, max).
+    ///
+    ///   [0] source address (0x6E)    [1] length (0x88)        [2] 0x02 (Get VCP reply opcode)
+    ///   [3] result (0 = no error)    [4] VCP code echo        [5] VCP type
+    ///   [6..7] max (big-endian)      [8..9] current           [10] checksum = 0x50 ^ bytes 0…9
+    ///
+    /// Anything else is a NAK, a stale reply or line noise; reading values out of it would
+    /// report a bogus brightness, so it is rejected (callers retry).
+    static func parseVCPReply(_ reply: [UInt8], command: UInt8) -> (current: UInt16, max: UInt16)? {
+        guard reply.count >= 11 else { return nil }
+        var checksum: UInt8 = 0x50
+        for byte in reply[0..<10] { checksum ^= byte }
+        guard reply[0] == 0x6E, reply[2] == 0x02, reply[3] == 0x00, reply[4] == command,
+              checksum == reply[10] else { return nil }
+        let maxValue = UInt16(reply[6]) << 8 | UInt16(reply[7])
+        let current = UInt16(reply[8]) << 8 | UInt16(reply[9])
+        return (current, maxValue)
+    }
+
+    // MARK: - Synchronous DDC I/O (ddcQueue)
+
+    private enum ReadResult {
+        case value((current: UInt16, max: UInt16))
+        case failed
+        case noService
+    }
+
+    private enum WriteResult {
+        case value
+        case failed
+        case noService
+    }
+
+    private func writeSynchronous(displayID: CGDirectDisplayID, command: UInt8, value: UInt16) -> WriteResult {
+#if arch(arm64)
+        return arm64Write(displayID: displayID, command: command, value: value)
+#else
+        return intelWrite(displayID: displayID, command: command, value: value)
+#endif
+    }
+
+    private func readSynchronous(displayID: CGDirectDisplayID, command: UInt8) -> ReadResult {
+#if arch(arm64)
+        return arm64Read(displayID: displayID, command: command)
+#else
+        return intelRead(displayID: displayID, command: command)
+#endif
+    }
+
+    // MARK: - ARM64 IOAVService Path
+
+#if arch(arm64)
+
+    /// Identity of an external display as its framebuffer reports it in the IORegistry.
+    private struct FramebufferIdentity {
+        let vendor: UInt32?
+        let product: UInt32?
+        let serial: UInt32?
+        let name: String?
+    }
+
+    private struct AVProxy {
+        /// Name of the `dispextN` node whose framebuffer drives this proxy, if found.
+        let link: String?
+        let service: IOAVServiceRef
+    }
+
+    /// The service for a display, re-matching all services when the map is missing or stale.
+    private func findAVService(for displayID: CGDirectDisplayID) -> IOAVServiceRef? {
+        if let service = avMap[displayID] { return service }
+        if avMapBuiltAt != 0, Self.now - avMapBuiltAt < Self.avMapNegativeTTLNanos { return nil }
+        rebuildAVMap()
+        return avMap[displayID]
+    }
+
+    private func invalidateAVMap() {
+        for service in avMap.values { releaseAVService(service) }
+        avMap.removeAll()
+        avMapBuiltAt = 0
+    }
+
+    /// Matches every external DCPAVServiceProxy to a candidate display.
+    ///
+    /// The identity of a display lives on its `IOMobileFramebufferShim` (`DisplayAttributes` →
+    /// `ProductAttributes`), a child of the `dispextN` node. The proxy hangs below the sibling
+    /// `dcpextN` coprocessor node; its parent is named `dispextN:dcpav-service-epic:…`, which
+    /// links the two. Pairs are scored on vendor, product, serial and name. Index matching is
+    /// only used when exactly one proxy and one display remain, so a display falls back to
+    /// software dimming rather than controlling another monitor.
+    private func rebuildAVMap() {
+        invalidateAVMap()
+        avMapBuiltAt = Self.now
+
+        let candidates = lock.withLock { self.candidates }
+        var proxies = externalAVProxies()
+        guard !candidates.isEmpty, !proxies.isEmpty else {
+            proxies.forEach { releaseAVService($0.service) }
+            return
+        }
+        let identities = framebufferIdentities()
+
+        var proxyFor: [Int: Int] = [:]          // candidate index → proxy index
+        var usedProxies = Set<Int>()
+
+        // 1. Strong identity matches, best first. Equal scores (identical monitors) pair up in
+        //    dispextN order against display ID order, so the result is at least stable.
+        var pairs: [(score: Int, proxy: Int, candidate: Int)] = []
+        for (p, proxy) in proxies.enumerated() {
+            guard let link = proxy.link, let identity = identities[link] else { continue }
+            for (c, candidate) in candidates.enumerated() {
+                let score = Self.matchScore(identity, candidate)
+                if score >= 5 { pairs.append((score, p, c)) }
+            }
+        }
+        pairs.sort { a, b in
+            if a.score != b.score { return a.score > b.score }
+            let orderA = Self.linkOrder(proxies[a.proxy].link), orderB = Self.linkOrder(proxies[b.proxy].link)
+            if orderA != orderB { return orderA < orderB }
+            return candidates[a.candidate].displayID < candidates[b.candidate].displayID
+        }
+        for pair in pairs where proxyFor[pair.candidate] == nil && !usedProxies.contains(pair.proxy) {
+            proxyFor[pair.candidate] = pair.proxy
+            usedProxies.insert(pair.proxy)
+        }
+
+        // 2. Product name alone, when it is unique among what's left.
+        for (p, proxy) in proxies.enumerated() where !usedProxies.contains(p) {
+            guard let link = proxy.link, let name = identities[link]?.name.map(Self.normalizedName) else { continue }
+            let matches = candidates.indices.filter {
+                proxyFor[$0] == nil && candidates[$0].name.map(Self.normalizedName) == name
+            }
+            if matches.count == 1 {
+                proxyFor[matches[0]] = p
+                usedProxies.insert(p)
+            }
+        }
+
+        // 3. One proxy and one display left: they belong together (the common single-monitor
+        //    case, also when the registry reports IDs CoreGraphics doesn't).
+        let freeProxies = proxies.indices.filter { !usedProxies.contains($0) }
+        let freeCandidates = candidates.indices.filter { proxyFor[$0] == nil }
+        if freeProxies.count == 1, freeCandidates.count == 1 {
+            proxyFor[freeCandidates[0]] = freeProxies[0]
+            usedProxies.insert(freeProxies[0])
+        }
+
+        for (c, p) in proxyFor {
+            avMap[candidates[c].displayID] = proxies[p].service
+#if DEBUG
+            print("[DDCService] AVService \(proxies[p].link ?? "?") → display \(candidates[c].displayID)")
+#endif
+        }
+        for (p, proxy) in proxies.enumerated() where !usedProxies.contains(p) {
+            releaseAVService(proxy.service)
+        }
+        proxies.removeAll()
+    }
+
+    /// vendor ±4, product ±4, serial ±2 (only when both report a real one), name +1.
+    private static func matchScore(_ identity: FramebufferIdentity, _ candidate: DDCCandidate) -> Int {
+        var score = 0
+        if let vendor = identity.vendor { score += vendor == candidate.vendor ? 4 : -4 }
+        if let product = identity.product { score += product == candidate.model ? 4 : -4 }
+        if let serial = identity.serial, isMeaningfulSerial(serial), isMeaningfulSerial(candidate.serial) {
+            score += serial == candidate.serial ? 2 : -2
+        }
+        if let name = identity.name, let candidateName = candidate.name,
+           normalizedName(name) == normalizedName(candidateName) {
+            score += 1
+        }
+        return score
+    }
+
+    /// Many monitors report a placeholder serial (0 or 0x01010101).
+    private static func isMeaningfulSerial(_ serial: UInt32) -> Bool {
+        serial != 0 && serial != 0x0101_0101
+    }
+
+    /// NSScreen appends " (2)" to duplicate names; compare without it, case-insensitively.
+    private static func normalizedName(_ name: String) -> String {
+        var trimmed = name.trimmingCharacters(in: .whitespaces)
+        if let range = trimmed.range(of: #"\s\(\d+\)$"#, options: .regularExpression) {
+            trimmed.removeSubrange(range)
+        }
+        return trimmed.lowercased()
+    }
+
+    /// The N of `dispextN`, for a stable order among equal matches.
+    private static func linkOrder(_ link: String?) -> Int {
+        guard let link, let number = Int(link.drop(while: { !$0.isNumber })) else { return Int.max }
+        return number
+    }
+
+    /// External framebuffers keyed by their parent node's name (`dispextN`).
+    private func framebufferIdentities() -> [String: FramebufferIdentity] {
+        var identities: [String: FramebufferIdentity] = [:]
+        for className in ["IOMobileFramebufferShim", "AppleCLCD2"] {
+            forEachService(matching: className) { service in
+                if let external = registryProperty(service, "external") as? Bool, !external { return }
+                guard let parentName = parentName(of: service), identities[parentName] == nil,
+                      let attributes = registryProperty(service, "DisplayAttributes") as? [String: Any],
+                      let product = attributes["ProductAttributes"] as? [String: Any] else { return }
+                identities[parentName] = FramebufferIdentity(
+                    vendor: (product["LegacyManufacturerID"] as? NSNumber)?.uint32Value,
+                    product: (product["ProductID"] as? NSNumber)?.uint32Value,
+                    serial: (product["SerialNumber"] as? NSNumber)?.uint32Value,
+                    name: product["ProductName"] as? String
+                )
+            }
+        }
+        return identities
+    }
+
+    /// Creates an IOAVService for every external DCPAVServiceProxy. The caller owns them.
+    private func externalAVProxies() -> [AVProxy] {
+        var proxies: [AVProxy] = []
+        forEachService(matching: "DCPAVServiceProxy") { service in
+            // Some drivers omit "Location"; still consider those.
+            if let location = registryProperty(service, "Location") as? String, location != "External" { return }
+            guard let avService = IOAVServiceCreateWithService(kCFAllocatorDefault, service) else { return }
+            proxies.append(AVProxy(link: proxyLink(service), service: avService))
+        }
+        return proxies
+    }
+
+    /// The `dispextN` name of the framebuffer a proxy belongs to: the prefix of the proxy's
+    /// parent (`dispext1:dcpav-service-epic:0`), else derived from its `dcpextN` ancestor.
+    private func proxyLink(_ service: io_service_t) -> String? {
+        if let name = parentName(of: service), let colon = name.firstIndex(of: ":") {
+            return String(name[..<colon])
+        }
+        var current = service
+        IOObjectRetain(current)
+        defer { IOObjectRelease(current) }
+        for _ in 0..<12 {
+            var parent: io_registry_entry_t = 0
+            guard IORegistryEntryGetParentEntry(current, kIOServicePlane, &parent) == KERN_SUCCESS else { return nil }
+            IOObjectRelease(current)
+            current = parent
+            let name = entryName(current)
+            if name.hasPrefix("dcpext") { return "disp" + name.dropFirst("dcp".count) }
+            if name == "dcp" { return "disp0" }
+        }
+        return nil
+    }
+
+    private func releaseAVService(_ service: IOAVServiceRef) {
+        Unmanaged<AnyObject>.fromOpaque(UnsafeRawPointer(service)).release()
+    }
+
+    /// ARM64 DDC write: send a Set VCP command via IOAVService.
+    /// Buffer layout (bytes sent after the device address / offset arguments):
+    ///   [0x84, 0x03, vcpCode, valueHigh, valueLow, checksum]
+    private func arm64Write(displayID: CGDirectDisplayID, command: UInt8, value: UInt16) -> WriteResult {
+        guard let avService = findAVService(for: displayID) else { return .noService }
+
+        // Checksum: 0x6E (display address) XOR 0x51 (host source address, sent by
+        // IOAVServiceWriteI2C as the data address) XOR every payload byte.
+        let payload: [UInt8] = [0x84, 0x03, command, UInt8(value >> 8), UInt8(value & 0xFF)]
+        var buffer = payload + [payload.reduce(UInt8(0x6E ^ 0x51), ^)]
+        let ret = IOAVServiceWriteI2C(avService, 0x37, 0x51, &buffer, UInt32(buffer.count))
+#if DEBUG
+        print("[DDCService] ARM64 write VCP 0x\(String(command, radix: 16)) = \(value) → \(ret == kIOReturnSuccess ? "OK" : "failed (\(ret))")")
+#endif
+        return ret == kIOReturnSuccess ? .value : .failed
+    }
+
+    /// ARM64 DDC read: send a Get VCP request then read the response via IOAVService.
+    /// Request layout: [0x82, 0x01, vcpCode, checksum]
+    private func arm64Read(displayID: CGDirectDisplayID, command: UInt8) -> ReadResult {
+        guard let avService = findAVService(for: displayID) else { return .noService }
+
+        let payload: [UInt8] = [0x82, 0x01, command]
+        var request = payload + [payload.reduce(UInt8(0x6E ^ 0x51), ^)]
+        guard IOAVServiceWriteI2C(avService, 0x37, 0x51, &request, UInt32(request.count)) == kIOReturnSuccess else {
+            return .failed
+        }
+
+        // The display needs ~40 ms to prepare its DDC/CI reply.
+        Thread.sleep(forTimeInterval: 0.04)
+
+        var reply = [UInt8](repeating: 0, count: 12)
+        guard IOAVServiceReadI2C(avService, 0x37, 0x51, &reply, UInt32(reply.count)) == kIOReturnSuccess,
+              let value = Self.parseVCPReply(reply, command: command) else {
+#if DEBUG
+            print("[DDCService] ARM64 read VCP 0x\(String(command, radix: 16)) failed: \(reply.map { String(format: "%02X", $0) }.joined(separator: " "))")
+#endif
+            return .failed
+        }
+        return .value(value)
+    }
+#endif
+
+    // MARK: - Intel (x86_64) IOFramebuffer Path
+
+    /// IOFramebuffer services that may carry the display's DDC bus, each retained (caller
+    /// releases). `CGDisplayIOServicePort` returns the framebuffer itself; IODisplayConnect
+    /// matching (its parent is the framebuffer) is the fallback.
+    private func framebufferServices(for displayID: CGDirectDisplayID) -> [io_service_t] {
+        var services: [io_service_t] = []
+        if let port = CGHelpers.framebufferPort(for: displayID) {
+            IOObjectRetain(port)
+            services.append(port)
+        }
+
+        let vendor = CGDisplayVendorNumber(displayID)
+        let model = CGDisplayModelNumber(displayID)
+        let serial = CGDisplaySerialNumber(displayID)
+        forEachService(matching: "IODisplayConnect") { service in
+            guard let info = IODisplayCreateInfoDictionary(service, IOOptionBits(kIODisplayOnlyPreferredName))?
+                .takeRetainedValue() as? [String: Any],
+                  (info["DisplayVendorID"] as? NSNumber)?.uint32Value == vendor,
+                  (info["DisplayProductID"] as? NSNumber)?.uint32Value == model else { return }
+            // Tell identical monitors apart when they report real serial numbers.
+            if serial != 0, let infoSerial = (info["DisplaySerialNumber"] as? NSNumber)?.uint32Value,
+               infoSerial != 0, infoSerial != serial { return }
+            var parent: io_service_t = 0
+            guard IORegistryEntryGetParentEntry(service, kIOServicePlane, &parent) == KERN_SUCCESS,
+                  parent != 0 else { return }
+            if services.contains(parent) {
+                IOObjectRelease(parent)
+            } else {
+                services.append(parent)
+            }
+        }
+        return services
+    }
+
+    /// Runs `body` with an open I2C connection for each bus of each framebuffer of the
+    /// display until it returns true.
+    private func withI2CConnections(
+        for displayID: CGDirectDisplayID,
+        _ body: (IOI2CConnectRef) -> Bool
+    ) -> (found: Bool, succeeded: Bool) {
+        let framebuffers = framebufferServices(for: displayID)
+        defer { framebuffers.forEach { IOObjectRelease($0) } }
+        guard !framebuffers.isEmpty else { return (false, false) }
+
+        for framebuffer in framebuffers {
+            // The DDC bus is not always bus 0.
+            for bus: UInt32 in 0..<8 {
+                var interface: io_service_t = 0
+                guard IOFBCopyI2CInterfaceForBus(framebuffer, bus, &interface) == KERN_SUCCESS else { continue }
+                defer { IOObjectRelease(interface) }
+                var connection: IOI2CConnectRef?
+                guard IOI2CInterfaceOpen(interface, IOOptionBits(0), &connection) == KERN_SUCCESS,
+                      let connection else { continue }
+                defer { IOI2CInterfaceClose(connection, IOOptionBits(0)) }
+                if body(connection) { return (true, true) }
+            }
+        }
+        return (true, false)
+    }
+
+    private func intelWrite(displayID: CGDirectDisplayID, command: UInt8, value: UInt16) -> WriteResult {
+        // [0x51, 0x84, 0x03, VCP, value high, value low, checksum]
+        var packet: [UInt8] = [0x51, 0x84, 0x03, command, UInt8(value >> 8), UInt8(value & 0xFF)]
+        packet.append(packet.reduce(UInt8(0x6E), ^))
+
+        let result = withI2CConnections(for: displayID) { connection in
+            packet.withUnsafeMutableBytes { raw -> Bool in
+                guard let pointer = raw.baseAddress else { return false }
+                var request = IOI2CRequest()
+                request.sendAddress = 0x6E
+                request.sendTransactionType = IOOptionBits(kIOI2CSimpleTransactionType)
+                request.sendBuffer = UInt(bitPattern: pointer)
+                request.sendBytes = UInt32(raw.count)
+                request.replyTransactionType = IOOptionBits(kIOI2CNoTransactionType)
+                request.minReplyDelay = 10_000_000  // 10 ms
+                return IOI2CSendRequest(connection, IOOptionBits(0), &request) == KERN_SUCCESS
+                    && request.result == KERN_SUCCESS
+            }
+        }
+        guard result.found else { return .noService }
+        return result.succeeded ? .value : .failed
+    }
+
+    private func intelRead(displayID: CGDirectDisplayID, command: UInt8) -> ReadResult {
+        // [0x51, 0x82, 0x01, VCP, checksum]
+        var packet: [UInt8] = [0x51, 0x82, 0x01, command]
+        packet.append(packet.reduce(UInt8(0x6E), ^))
+        var value: (current: UInt16, max: UInt16)?
+
+        let result = withI2CConnections(for: displayID) { connection in
+            var reply = [UInt8](repeating: 0, count: 12)
+            let sent = packet.withUnsafeMutableBytes { sendRaw in
+                reply.withUnsafeMutableBytes { replyRaw -> Bool in
+                    guard let sendPointer = sendRaw.baseAddress,
+                          let replyPointer = replyRaw.baseAddress else { return false }
+                    var request = IOI2CRequest()
+                    request.sendAddress = 0x6E
+                    request.sendTransactionType = IOOptionBits(kIOI2CSimpleTransactionType)
+                    request.sendBuffer = UInt(bitPattern: sendPointer)
+                    request.sendBytes = UInt32(sendRaw.count)
+                    request.replyAddress = 0x6F
+                    request.replyTransactionType = IOOptionBits(kIOI2CDDCciReplyTransactionType)
+                    request.replyBuffer = UInt(bitPattern: replyPointer)
+                    request.replyBytes = UInt32(replyRaw.count)
+                    request.minReplyDelay = 50_000_000  // 50 ms
+                    return IOI2CSendRequest(connection, IOOptionBits(0), &request) == KERN_SUCCESS
+                        && request.result == KERN_SUCCESS
+                }
+            }
+            guard sent, let parsed = Self.parseVCPReply(reply, command: command) else { return false }
+            value = parsed
+            return true
+        }
+        guard result.found else { return .noService }
+        return value.map { .value($0) } ?? .failed
+    }
+
+    // MARK: - IORegistry helpers
+
+    private func forEachService(matching className: String, _ body: (io_service_t) -> Void) {
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching(className), &iterator) == KERN_SUCCESS else { return }
+        defer { IOObjectRelease(iterator) }
+        var service = IOIteratorNext(iterator)
+        while service != IO_OBJECT_NULL {
+            body(service)
+            IOObjectRelease(service)
+            service = IOIteratorNext(iterator)
+        }
+    }
+
+    private func registryProperty(_ entry: io_registry_entry_t, _ key: String) -> Any? {
+        IORegistryEntryCreateCFProperty(entry, key as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue()
+    }
+
+    private func entryName(_ entry: io_registry_entry_t) -> String {
+        var buffer = [CChar](repeating: 0, count: 128)  // io_name_t
+        guard IORegistryEntryGetName(entry, &buffer) == KERN_SUCCESS else { return "" }
+        return String(decoding: buffer.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    }
+
+    private func parentName(of entry: io_registry_entry_t) -> String? {
+        var parent: io_registry_entry_t = 0
+        guard IORegistryEntryGetParentEntry(entry, kIOServicePlane, &parent) == KERN_SUCCESS else { return nil }
+        defer { IOObjectRelease(parent) }
+        let name = entryName(parent)
+        return name.isEmpty ? nil : name
     }
 }

@@ -38,7 +38,7 @@ struct ArrangementView: View {
                     .font(.caption2)
                     .foregroundColor(.red)
                     .padding(.horizontal, 4)
-                    .transition(.opacity)
+                    .transition(Disclosure.content)
             }
 
             if showsAutoArrangeToggle {
@@ -191,12 +191,12 @@ struct ArrangementView: View {
     }
 
     private func showError(_ message: String) {
-        withAnimation(.easeInOut(duration: 0.2)) { errorMessage = message }
+        errorMessage = message
         errorTask?.cancel()
         errorTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             guard !Task.isCancelled else { return }
-            withAnimation { errorMessage = nil }
+            errorMessage = nil
         }
     }
 }

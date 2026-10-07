@@ -27,7 +27,7 @@ struct SavePresetView: View {
                 SavePresetForm(onSaved: { isShowingSaveForm = false })
                     .padding(.horizontal, 12)
                     .padding(.bottom, 8)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .transition(Disclosure.content)
             }
         }
     }
@@ -115,7 +115,6 @@ struct SavePresetForm: View {
             .disabled(isSaving || presetName.trimmingCharacters(in: .whitespaces).isEmpty)
         }
         .padding(.vertical, 4)
-        .animation(.easeInOut(duration: 0.15), value: saveError)
     }
 
     private func savePreset() {

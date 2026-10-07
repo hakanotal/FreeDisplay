@@ -31,11 +31,14 @@ import CoreGraphics
 /// Shows the native macOS brightness OSD via the private OSDUIHelper XPC service.
 /// This produces the exact same brightness indicator that macOS uses natively.
 ///
-/// Used by MonitorControl and BetterDisplay for the same purpose.
+/// Used by MonitorControl and BetterDisplay for the same purpose. One connection is kept
+/// open and reused for every key press; it is recreated if the system invalidates it.
 @MainActor
 final class BrightnessHUDService: @unchecked Sendable {
     static let shared = BrightnessHUDService()
     private init() {}
+
+    private var connection: NSXPCConnection?
 
     // MARK: - Public API
 
@@ -44,32 +47,11 @@ final class BrightnessHUDService: @unchecked Sendable {
     ///   - brightness: Brightness level 0–100
     ///   - screen: The NSScreen on which the OSD should appear
     func show(brightness: Double, on screen: NSScreen) {
-        guard let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else {
-            NSLog("[BrightnessHUD] Could not get CGDirectDisplayID for screen")
-            return
-        }
+        guard let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
+              let helper = helperProxy() else { return }
 
         let totalChiclets: CUnsignedInt = 16
-        let filledChiclets = CUnsignedInt((brightness / 100.0 * Double(totalChiclets)).rounded())
-
-        let conn = NSXPCConnection(machServiceName: "com.apple.OSDUIHelper", options: [])
-        conn.remoteObjectInterface = NSXPCInterface(with: OSDUIHelperProtocol.self)
-        // @Sendable: XPC calls these on its own queue, never the main thread.
-        conn.interruptionHandler = { @Sendable in NSLog("[BrightnessHUD] XPC connection interrupted") }
-        conn.invalidationHandler = { @Sendable in NSLog("[BrightnessHUD] XPC connection invalidated") }
-        conn.resume()
-
-        // @Sendable: XPC calls this on its own queue; an implicitly main-isolated closure would trap.
-        let proxy = conn.remoteObjectProxyWithErrorHandler { @Sendable error in
-            NSLog("[BrightnessHUD] XPC error: %@", error.localizedDescription)
-        }
-
-        guard let helper = proxy as? OSDUIHelperProtocol else {
-            NSLog("[BrightnessHUD] Failed to get OSDUIHelper proxy")
-            conn.invalidate()
-            return
-        }
-
+        let filledChiclets = CUnsignedInt((max(0, min(100, brightness)) / 100.0 * Double(totalChiclets)).rounded())
         helper.showImage(
             .brightness,
             onDisplayID: displayID,
@@ -79,10 +61,34 @@ final class BrightnessHUDService: @unchecked Sendable {
             totalChiclets: totalChiclets,
             locked: false
         )
+    }
 
-        // Invalidate after a short delay to allow the XPC message to be delivered
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            conn.invalidate()
+    private func helperProxy() -> OSDUIHelperProtocol? {
+        let connection = self.connection ?? makeConnection()
+        // @Sendable: XPC calls this on its own queue; an implicitly main-isolated closure would trap.
+        return connection.remoteObjectProxyWithErrorHandler { @Sendable error in
+            NSLog("[BrightnessHUD] XPC error: %@", error.localizedDescription)
+        } as? OSDUIHelperProtocol
+    }
+
+    private func makeConnection() -> NSXPCConnection {
+        let connection = NSXPCConnection(machServiceName: "com.apple.OSDUIHelper", options: [])
+        connection.remoteObjectInterface = NSXPCInterface(with: OSDUIHelperProtocol.self)
+        let id = ObjectIdentifier(connection)
+        // @Sendable: XPC calls these on its own queue, never the main thread.
+        // After an interruption the connection stays usable (XPC relaunches the service).
+        connection.interruptionHandler = { @Sendable in NSLog("[BrightnessHUD] XPC connection interrupted") }
+        connection.invalidationHandler = { @Sendable in
+            Task { @MainActor in BrightnessHUDService.shared.connectionInvalidated(id) }
+        }
+        connection.resume()
+        self.connection = connection
+        return connection
+    }
+
+    private func connectionInvalidated(_ id: ObjectIdentifier) {
+        if let connection, ObjectIdentifier(connection) == id {
+            self.connection = nil
         }
     }
 }

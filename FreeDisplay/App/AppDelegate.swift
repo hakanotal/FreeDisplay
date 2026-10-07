@@ -7,6 +7,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// menu panel is never opened (MenuBarExtra builds its content lazily).
     let displayManager: DisplayManager
     private var workspaceObservers: [NSObjectProtocol] = []
+    private var notificationObservers: [NSObjectProtocol] = []
+    /// False for a duplicate launch that quits right away: it must not touch display state.
+    private var servicesStarted = false
 
     override init() {
         // Must run before any service reads its defaults.
@@ -36,25 +39,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         Task { @MainActor in
-            // A quitting instance resets the gamma tables it wrote. Wait until it is gone
+            // A quitting instance restores the transfer tables it wrote. Wait until it is gone
             // before applying display state, or it would wipe ours.
             await Self.waitForTermination(of: replacedInstances, timeout: 5)
+            // Migrate the old login item / hand a manual launch over to the launchd agent.
+            // After a hand-over the agent's instance replaces this one within moments; starting
+            // services meanwhile would only flash brightness and night mode. Start anyway if
+            // it never arrives.
+            if LaunchService.shared.prepareAtLaunch() {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+            }
             self.startServices()
         }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        guard servicesStarted else { return }
         workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        notificationObservers.forEach { NotificationCenter.default.removeObserver($0) }
         BrightnessKeyService.shared.stop()
-        // GammaService restores identity transfer tables via its willTerminateNotification observer.
+        BrightnessService.shared.flushPendingWrites()
+        // Give every display FreeDisplay changed its profile's own transfer function back.
+        GammaService.shared.restoreSystemCurves()
         VirtualDisplayService.shared.destroyAll()
     }
 
     // MARK: - Startup
 
     private func startServices() {
-        // Migrate the old login item / hand a manual launch over to the launchd agent.
-        LaunchService.shared.prepareAtLaunch()
+        guard !servicesStarted else { return }
+        servicesStarted = true
         SettingsService.shared.launchAtLogin = LaunchService.shared.isEnabled
 
         displayManager.start()
@@ -73,16 +87,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = AutoBrightnessService.shared
         _ = VirtualDisplayService.shared
 
-        let center = NSWorkspace.shared.notificationCenter
-        workspaceObservers.append(center.addObserver(
+        let workspace = NSWorkspace.shared.notificationCenter
+        workspaceObservers.append(workspace.addObserver(
             forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
         ) { _ in
-            Task { @MainActor in ResolutionService.shared.snapshotModesBeforeSleep() }
+            MainActor.assumeIsolated { ResolutionService.shared.snapshotModesBeforeSleep() }
         })
-        workspaceObservers.append(center.addObserver(
+        workspaceObservers.append(workspace.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in await self?.displayManager.reapplyDisplayStateAfterWake() }
+            MainActor.assumeIsolated { self?.displayManager.reapplyDisplayStateAfterWake() }
+        })
+        // Display sleep (no system sleep) can reset transfer tables too.
+        workspaceObservers.append(workspace.addObserver(
+            forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.displayManager.handleScreensWake() }
+        })
+        // A profile switch (ours or System Settings') makes ColorSync rewrite the table,
+        // wiping night mode, software dimming and image adjustments.
+        notificationObservers.append(NotificationCenter.default.addObserver(
+            forName: NSScreen.colorSpaceDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.displayManager.handleColorSpaceChange() }
         })
 
         // Opt-in "external displays above built-in": apply once displays have settled.
@@ -91,6 +118,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 await self.displayManager.arrangeExternalAboveBuiltin()
             }
+        }
+
+        if SettingsService.shared.checkUpdatesOnLaunch {
+            Task { await UpdateService.shared.checkForUpdates() }
         }
     }
 

@@ -16,6 +16,20 @@ struct MenuItemIcon: View {
     }
 }
 
+// MARK: - Disclosure
+
+/// How sections open and close (same as FreeAudio). The panel's height is not animated:
+/// MenuBarExtra sizes its window to the content, and an animated height change resizes and
+/// redraws the window frame by frame, which lags behind the content (rows sliding under a
+/// window that already snapped). The panel snaps to its new size, new content fades in
+/// quickly, closing is immediate, and only the chevron turns.
+enum Disclosure {
+    static let chevron: Animation = .easeOut(duration: 0.15)
+    static var content: AnyTransition {
+        .asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.12)), removal: .identity)
+    }
+}
+
 // MARK: - ExpandableRow
 
 struct ExpandableRow: View {
@@ -42,18 +56,14 @@ struct ExpandableRow: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                .animation(.easeInOut(duration: 0.2), value: isExpanded)
+                .animation(Disclosure.chevron, value: isExpanded)
                 .accessibilityHidden(true)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
         .background(Color.primary.opacity(isHovered ? 0.06 : 0))
         .contentShape(Rectangle())
-        .onTapGesture {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                isExpanded.toggle()
-            }
-        }
+        .onTapGesture { isExpanded.toggle() }
         .onHover { isHovered = $0 }
         .accessibilityLabel(isExpanded ? L("\(label), genişletildi", "\(label), expanded") : L("\(label), daraltıldı", "\(label), collapsed"))
         .accessibilityHint(L("Bu bölümü genişletmek veya daraltmak için tıklayın", "Click to expand or collapse this section"))
@@ -66,8 +76,6 @@ struct MenuBarView: View {
     @EnvironmentObject var displayManager: DisplayManager
     @ObservedObject private var updateService = UpdateService.shared
     @ObservedObject private var settings = SettingsService.shared
-    @ObservedObject private var virtualDisplayService = VirtualDisplayService.shared
-    @ObservedObject private var nightMode = NightModeService.shared
     @State private var expandedDisplayIDs: Set<CGDirectDisplayID> = []
     @State private var showArrangement: Bool = false
     @State private var showVirtualDisplays: Bool = false
@@ -77,8 +85,9 @@ struct MenuBarView: View {
     @State private var quitHovered = false
     @State private var contentHeight: CGFloat = 0
 
+    /// FreeDisplay's own virtual displays are managed in the Virtual Displays section.
     private var visibleDisplays: [DisplayInfo] {
-        displayManager.displays.filter { !virtualDisplayService.isVirtualDisplay($0.displayID) }
+        displayManager.displays.filter { !$0.isVirtual }
     }
 
     var body: some View {
@@ -102,8 +111,12 @@ struct MenuBarView: View {
 
                         if expandedDisplayIDs.contains(display.displayID) {
                             DisplayDetailView(display: display)
+                                .transition(Disclosure.content)
                         }
                     }
+                    // A display ID can be handed to another monitor; its rows must not keep the
+                    // previous monitor's view state (slider values, toggles).
+                    .id(display.displayUUID)
                 }
 
                 // Preset list
@@ -129,7 +142,7 @@ struct MenuBarView: View {
                     if showArrangement {
                         ArrangementView()
                             .environmentObject(displayManager)
-                            .transition(.opacity.combined(with: .move(edge: .top)))
+                            .transition(Disclosure.content)
                     }
                 }
 
@@ -139,7 +152,7 @@ struct MenuBarView: View {
 
                 // Combined brightness control
                 if settings.showCombinedBrightness {
-                    CombinedBrightnessView(displays: displayManager.displays)
+                    CombinedBrightnessView(displays: visibleDisplays)
                     Divider()
                         .opacity(0.3)
                         .padding(.vertical, 2)
@@ -165,7 +178,7 @@ struct MenuBarView: View {
                 if showVirtualDisplays {
                     VirtualDisplayView()
                         .padding(.leading, 8)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
+                        .transition(Disclosure.content)
                 }
 
                 // Auto brightness entry
@@ -179,22 +192,16 @@ struct MenuBarView: View {
                 if showAutoBrightness {
                     AutoBrightnessView()
                         .padding(.leading, 8)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
+                        .transition(Disclosure.content)
                 }
 
                 // Night mode (blue light filter)
-                ExpandableRow(
-                    icon: "moon.fill",
-                    iconColor: nightMode.isActive ? .indigo : .gray,
-                    label: L("Gece Modu", "Night Mode"),
-                    subtitle: NightModeView.subtitle(for: nightMode),
-                    isExpanded: $showNightMode
-                )
+                NightModeHeader(isExpanded: $showNightMode)
 
                 if showNightMode {
                     NightModeView()
                         .padding(.leading, 8)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
+                        .transition(Disclosure.content)
                 }
 
                 Divider()
@@ -212,7 +219,7 @@ struct MenuBarView: View {
                 if showSettings {
                     SettingsView()
                         .padding(.leading, 8)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
+                        .transition(Disclosure.content)
                 }
 
                 Divider()
@@ -250,6 +257,7 @@ struct MenuBarView: View {
         // ScrollView's minimum height is 0 (only the footer would show). Pin the ScrollView
         // to the measured content height, capped so long content still scrolls.
         .frame(height: min(contentHeight, 640))
+        .animation(nil, value: contentHeight)
 
         Divider().opacity(0.3)
 
@@ -312,6 +320,23 @@ private extension View {
     }
 }
 
+/// The Night Mode section header. Observes NightModeService itself, so dragging the warmth
+/// slider doesn't re-render the whole panel on every tick.
+private struct NightModeHeader: View {
+    @ObservedObject private var nightMode = NightModeService.shared
+    @Binding var isExpanded: Bool
+
+    var body: some View {
+        ExpandableRow(
+            icon: "moon.fill",
+            iconColor: nightMode.isActive ? .indigo : .gray,
+            label: L("Gece Modu", "Night Mode"),
+            subtitle: NightModeView.subtitle(for: nightMode),
+            isExpanded: $isExpanded
+        )
+    }
+}
+
 // MARK: - SettingsView (embedded in MenuBarView)
 
 struct SettingsView: View {
@@ -354,7 +379,7 @@ struct SettingsView: View {
                     } else {
                         LaunchService.shared.disable()
                     }
-                    settings.launchAtLogin = newValue
+                    settings.launchAtLogin = LaunchService.shared.isEnabled
                 }
             )) {
                 HStack(spacing: 6) {
@@ -371,7 +396,7 @@ struct SettingsView: View {
             .help(L("Oturum açıldığında FreeDisplay'i otomatik başlat", "Start FreeDisplay automatically at login"))
 
             // First-launch hint: suggest enabling launch at login
-            if !settings.launchAtLoginPrompted {
+            if !settings.launchAtLoginPrompted && !settings.launchAtLogin {
                 HStack(spacing: 6) {
                     Image(systemName: "info.circle")
                         .foregroundColor(.secondary)
@@ -389,10 +414,6 @@ struct SettingsView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 2)
-                .onAppear {
-                    // Mark as prompted so it only shows once
-                    // User dismisses manually via "Anladım" button
-                }
             }
 
             // Show combined brightness
@@ -433,7 +454,6 @@ struct SettingsView: View {
 
 struct DisplayRowView: View {
     @ObservedObject var display: DisplayInfo
-    @EnvironmentObject var displayManager: DisplayManager
     @State private var isHovered: Bool = false
 
     let isExpanded: Bool
@@ -447,7 +467,7 @@ struct DisplayRowView: View {
                     .foregroundColor(.secondary)
                     .frame(width: 16)
                     .rotationEffect(Angle(degrees: isExpanded ? 90 : 0))
-                    .animation(.easeInOut(duration: 0.2), value: isExpanded)
+                    .animation(Disclosure.chevron, value: isExpanded)
                     .accessibilityHidden(true)
 
                 MenuItemIcon(systemName: display.isBuiltin ? "laptopcomputer" : "display", color: .blue)

@@ -25,8 +25,12 @@ Hard-won constraints. Each one cost real debugging time; don't relearn them.
 - Validate DDC replies (opcode 0x02, result 0, VCP echo, checksum 0x50 ^ bytes 0…9). Unvalidated replies report bogus values.
 - One failed DDC transfer isn't proof DDC is unsupported (monitor waking up). Re-probe after wake, and drop leftover software dimming once DDC works.
 - IOFramebuffer I2C (`IOFBCopyI2CInterfaceForBus`) silently does nothing on Apple Silicon. Use IOAVService via `DCPAVServiceProxy`.
-- Don't match IOKit services with `CGDisplayVendorNumber/ModelNumber`; they don't always match IOKit's IDs. Use `NSScreen.localizedName` for names.
-- `CGDisplayIOServicePort` is unavailable. Enumerate `IODisplayConnect` with `IOServiceGetMatchingServices`.
+- Apple Silicon has no `DisplayVendorID` anywhere in the IORegistry. A `DCPAVServiceProxy`'s parent is named `dispextN:dcpav-service-epic:…`; the display's identity is on the sibling `dispextN` → `IOMobileFramebufferShim` → `DisplayAttributes.ProductAttributes` (`LegacyManufacturerID`, `ProductID`, `SerialNumber`, `ProductName`). Never pair services with displays by sorted index when more than one of each is left: a Sidecar or virtual display with a lower ID got the monitor's service.
+- Vendor/model alone don't identify a monitor, and many report a placeholder serial (0x01010101). Match on a score (vendor, product, a real serial, `NSScreen.localizedName`), not on vendor/model equality.
+- Don't probe DDC with an unsolicited I2C read: monitors that reject it, or are briefly busy, silently drop out.
+- Coalesce DDC writes (latest value wins) and keep commands to a display ≥ 50 ms apart; monitors drop faster ones, and a queue of stale writes makes sliders and keys lag.
+- `DisplayServicesGetBrightness` succeeds only for displays with a native backlight (built-in, Studio Display, XDR); other monitors return 1000. Use it to pick the native path for Apple externals.
+- `CGDisplayIOServicePort` is imported as unavailable and deprecated: resolve it with `dlsym` (`CGHelpers.framebufferPort`), never bind it. It returns the IOFramebuffer itself (Intel), not a child.
 - Integer values in IOKit CF dictionaries may bridge as `Int`, not `UInt32`. Try both.
 - DDC reads take 50 ms or more. Cache them (5 s TTL), invalidate after writes, and degrade gracefully when DDC is unsupported.
 - Keep microsecond IOKit calls synchronous. Making name lookup async caused races and "Display N" flicker.
@@ -34,11 +38,15 @@ Hard-won constraints. Each one cost real debugging time; don't relearn them.
 ## Shared resources & lifecycle
 
 - One writer per CoreGraphics resource. `GammaService` owns the transfer table; `BrightnessService` supplies a factor it multiplies in. Every code path (formula *and* quantized table) must apply the factor.
+- A transfer-table write replaces the profile's `vcgt` calibration curve. Compose on top of it (`CalibrationCurve`), restore it instead of identity, and never write displays FreeDisplay hasn't changed.
+- A profile switch, display sleep and *every* completed display configuration rewrite the transfer table too, not only system sleep: arranging displays, changing the main display, opening or closing the lid. Reapply on `colorSpaceDidChange`, `screensDidWake` and after every reconfiguration, more than once (profiles load a moment later); passes are merged and idempotent.
 - Never call `CGDisplayRestoreColorSyncSettings()` (global). Use `GammaService.resetSingleDisplay(_:)`.
 - Resetting image adjustments must not touch the ColorSync profile, and pausing or resetting must keep software brightness and the night tint.
-- Sleep resets all transfer tables. Reapply on `didWakeNotification`: brightness before gamma, or the screen flashes at full brightness.
+- Sleep resets all transfer tables. Reapply on `didWakeNotification` right away (in-memory state survives sleep) and again once WindowServer has settled, or the screen flashes at full brightness. GammaService reads the software factor itself (`effectiveSoftwareBrightness`), so there is no ordering to get wrong.
 - Pass `self` to long-lived C callbacks with `Unmanaged.passRetained`, and `release()` on unregister.
-- Lock mutable state that is read from multiple threads (e.g. `GammaService.activeAdjustments` uses an `NSLock`).
+- Keep service state on the main actor (`BrightnessService`, `GammaService`) and lock only what other threads really touch (`DDCService` caches, the event tap's display set).
+- CGDirectDisplayIDs get reused by other monitors. Compare identity on refresh (`DisplayInfo.isSameMonitor`) and drop per-ID memory (`forgetDisplay`), or one monitor's dimming and adjustments land on another and get saved under its UUID.
+- Mode IDs are per display. Never look up one display's mode ID on another (the old mirror redirect applied random modes to the source).
 - Auto brightness must back off after a manual change (30 s cooldown).
 - Set `NSWindow.isReleasedWhenClosed = false` for windows you keep in a dictionary.
 - Don't mutate a dictionary while iterating it; collect the keys first.
@@ -49,6 +57,7 @@ Hard-won constraints. Each one cost real debugging time; don't relearn them.
 - Never auto-apply a layout from a reconfiguration callback for move events, and never on panel open: it fights the user's own arrangement.
 - Key per-display settings by display UUID. CGDirectDisplayIDs can be reassigned, and a mode ID saved for one monitor is meaningless (or wrong) on another.
 - Event tap callbacks don't own the passed-in event: return `Unmanaged.passUnretained(event)` to pass it through. `passRetained` leaks one event per call.
+- An active (`.defaultTap`) event tap filters every media key in the session. Run it on its own thread: on the main run loop, any main-thread stall (an admin prompt) freezes volume and brightness keys system-wide.
 - Swift 6 inserts a runtime main-thread check into closures created in a `@MainActor` context and passed as non-`@Sendable` parameters. If such a closure runs on another queue (DDC completions, XPC handlers), the app traps. Mark completion handlers that run off-main `@Sendable`.
 
 ## SwiftUI / MenuBarExtra
@@ -60,6 +69,10 @@ Hard-won constraints. Each one cost real debugging time; don't relearn them.
 - On macOS 27 the panel is sized to the content's *minimum* size, so a bare `ScrollView` collapses to 0 height. Test layout on macOS 27, not only on the macOS 14 target.
 - Row components with local state (`isHovered`, `isLoading`) must be separate `struct`s. `@ViewBuilder` functions can't hold `@State`.
 - Observe shared singletons with `@ObservedObject`, not `@StateObject`.
+- Every `@Published` change re-renders every view observing that object. A view that only needs a `DisplayInfo`'s constant fields takes `let display`, or each brightness tick rebuilds it.
+- `State(initialValue:)` in a custom `init` is evaluated on every parent render (only the first value is kept). Keep it cheap; cache derived data in a reference instead.
+- Don't animate the panel's height (springs, `.move` transitions, `withAnimation` around a toggle that adds rows): the MenuBarExtra window follows the measured content height, so it resizes in steps while rows slide inside it, which feels slow and laggy. Toggle without `withAnimation`, fade new content in briefly (`Disclosure.content`), animate only the chevron (`Disclosure.chevron`), and keep `.animation(nil, value: contentHeight)` on the ScrollView frame. Same as FreeAudio.
+- A slider's custom `Binding` setter runs only for the user's own changes (drag, keyboard, VoiceOver); use it instead of `onChange`, which also fires when the value follows the model.
 - Don't make IOKit/CG calls in `body`; load them in `.task`/`onAppear`.
 - `flag = true; syncWork(); flag = false` never renders the intermediate state. Use async.
 

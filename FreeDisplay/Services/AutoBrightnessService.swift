@@ -28,38 +28,30 @@ final class AutoBrightnessService: ObservableObject, @unchecked Sendable {
         didSet { savePrefs() }
     }
 
-    /// Last builtin brightness reading (0.0–1.0). 0 = unavailable / no builtin display.
+    /// Last builtin brightness reading (0.0–1.0).
     @Published private(set) var builtinBrightness: Double = 0
+    /// False while no built-in panel can be read (desktop Mac, lid closed). Starts true so the
+    /// toggle is usable before the first poll.
+    @Published private(set) var builtinAvailable = true
     private var lastAppliedBrightness: Double = -1
-
-    /// Set to true after the first poll attempt completes (success or failure).
-    /// Used by the UI to distinguish "not polled yet" from "no builtin display found".
-    @Published private(set) var hasPolled: Bool = false
 
     // MARK: - Private
 
     private var pollingTask: Task<Void, Never>?
-    private let pollingInterval: TimeInterval = 2.0  // seconds
-
-    // MARK: - Builtin Brightness
-
-    /// Reads the current brightness of the builtin display.
-    /// Returns a value in 0.0–1.0, or nil if no builtin display is found.
-    /// Safe to call from a background thread.
-    nonisolated func readBuiltinBrightness() -> Double? {
-        BrightnessService.shared.readBuiltinBrightness()
-    }
+    /// Poll every 2 s while the built-in panel is readable, every 10 s while it isn't.
+    private static let pollingInterval: TimeInterval = 2.0
+    private static let unavailablePollingInterval: TimeInterval = 10.0
 
     // MARK: - Polling
 
     private func startPolling() {
         stopPolling()
-        pollingTask = Task.detached { [weak self] in
-            guard let self else { return }
+        pollingTask = Task.detached(priority: .utility) { [weak self] in
             while !Task.isCancelled {
-                let brightness = self.readBuiltinBrightness()
-                await self.applyBrightness(builtin: brightness)
-                try? await Task.sleep(nanoseconds: UInt64(self.pollingInterval * 1_000_000_000))
+                let brightness = BrightnessService.readBuiltinBrightness()
+                guard let self else { return }
+                let interval = await self.applyBrightness(builtin: brightness)
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
             }
         }
     }
@@ -69,34 +61,30 @@ final class AutoBrightnessService: ObservableObject, @unchecked Sendable {
         pollingTask = nil
     }
 
-    @MainActor
-    private func applyBrightness(builtin: Double?) async {
-        builtinBrightness = builtin ?? 0
-        hasPolled = true
-
-        guard let builtin, builtin > 0 else { return }
+    /// Syncs external displays to the built-in reading and returns the next polling interval.
+    private func applyBrightness(builtin: Double?) -> TimeInterval {
+        let available = builtin != nil
+        if builtinAvailable != available { builtinAvailable = available }
+        guard let builtin else { return Self.unavailablePollingInterval }
+        if builtinBrightness != builtin { builtinBrightness = builtin }
 
         // Only apply if builtin brightness changed more than 2% since last application.
-        guard abs(builtin - lastAppliedBrightness) >= 0.02 else { return }
+        guard abs(builtin - lastAppliedBrightness) >= 0.02 else { return Self.pollingInterval }
 
         // Respect 30-second cooldown after a manual brightness adjustment.
         if let last = BrightnessService.shared.lastManualAdjustDate,
            Date().timeIntervalSince(last) < 30.0 {
-            return
+            return Self.pollingInterval
         }
 
         let targetPercentage = min(100.0, max(0.0, builtin * sensitivity * 100.0))
-
-        let snapshot = DisplayManagerAccessor.shared.displays
-        for display in snapshot {
-            // Only sync to external (non-builtin, non-virtual) displays.
-            guard !display.isBuiltin, !VirtualDisplayService.shared.isVirtualDisplay(display.displayID) else { continue }
-            let current = display.brightness
-            if abs(current - targetPercentage) >= 2.0 {
-                await BrightnessService.shared.setBrightness(targetPercentage, for: display, isAutoAdjust: true)
+        for display in DisplayManagerAccessor.shared.displays where !display.isBuiltin && !display.isVirtual {
+            if abs(display.brightness - targetPercentage) >= 2.0 {
+                BrightnessService.shared.setBrightnessSmooth(targetPercentage, for: display, isAutoAdjust: true)
             }
         }
         lastAppliedBrightness = builtin
+        return Self.pollingInterval
     }
 
     // MARK: - Persistence
@@ -104,14 +92,23 @@ final class AutoBrightnessService: ObservableObject, @unchecked Sendable {
     private let enabledKey = "fd.AutoBrightnessEnabled"
     private let sensitivityKey = "fd.AutoBrightnessSensitivity"
 
+    private var isLoadingPrefs = false
+
+    /// Both values are read before either is assigned, and the observers' saves are skipped
+    /// while loading: each one would write the other, not-yet-loaded value. Setting
+    /// `isEnabled` starts polling when on.
     private func loadPrefs() {
-        isEnabled = UserDefaults.standard.bool(forKey: enabledKey)
-        if UserDefaults.standard.object(forKey: sensitivityKey) != nil {
-            sensitivity = UserDefaults.standard.double(forKey: sensitivityKey)
-        }
+        let defaults = UserDefaults.standard
+        let savedSensitivity = defaults.object(forKey: sensitivityKey) as? Double
+        let savedEnabled = defaults.bool(forKey: enabledKey)
+        isLoadingPrefs = true
+        defer { isLoadingPrefs = false }
+        if let savedSensitivity { sensitivity = savedSensitivity }
+        isEnabled = savedEnabled
     }
 
     private func savePrefs() {
+        guard !isLoadingPrefs else { return }
         UserDefaults.standard.set(isEnabled, forKey: enabledKey)
         UserDefaults.standard.set(sensitivity, forKey: sensitivityKey)
     }

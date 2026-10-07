@@ -32,6 +32,7 @@ final class NotchOverlayManager {
 
     func setNotchHidden(_ hidden: Bool, for displayID: CGDirectDisplayID) {
         let uuid = DisplayInfo.uuidString(for: displayID)
+        guard hiddenDisplayUUIDs.contains(uuid) != hidden else { return }
         if hidden {
             hiddenDisplayUUIDs.insert(uuid)
         } else {

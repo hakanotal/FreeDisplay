@@ -1,4 +1,6 @@
 import Foundation
+import CoreGraphics
+import IOKit
 
 /// Shared utilities for wrapping blocking CoreGraphics calls.
 enum CGHelpers {
@@ -23,29 +25,59 @@ enum CGHelpers {
         fallback: T,
         operation: @escaping @Sendable () -> T
     ) async -> T {
-        await withCheckedContinuation { cont in
-            let lock = NSLock()
-            var didResume = false
+        await withCheckedContinuation { continuation in
+            let once = ResumeOnce(continuation)
 
             DispatchQueue.global(qos: .userInitiated).async {
-                let result = operation()
-                lock.lock()
-                guard !didResume else { lock.unlock(); return }
-                didResume = true
-                lock.unlock()
-                cont.resume(returning: result)
+                once.resume(returning: operation())
             }
 
             DispatchQueue.global().asyncAfter(deadline: .now() + seconds) {
-                lock.lock()
-                guard !didResume else { lock.unlock(); return }
-                didResume = true
-                lock.unlock()
+                if once.resume(returning: fallback) {
 #if DEBUG
-                print("[CGHelpers] runWithTimeout: timed out after \(seconds)s — returning fallback")
+                    print("[CGHelpers] runWithTimeout: timed out after \(seconds)s — returning fallback")
 #endif
-                cont.resume(returning: fallback)
+                }
             }
         }
+    }
+
+    /// The IOFramebuffer service of a display (not retained), or nil when unavailable.
+    ///
+    /// `CGDisplayIOServicePort` is deprecated since macOS 10.9 and imported into Swift as
+    /// unavailable. It is resolved at runtime rather than bound at link time, so the app keeps
+    /// launching if Apple ever removes the symbol. Only Intel Macs return a port; on Apple
+    /// Silicon it yields 0.
+    static func framebufferPort(for displayID: CGDirectDisplayID) -> io_service_t? {
+        guard let function = cgDisplayIOServicePort else { return nil }
+        let port = function(displayID)
+        return port == MACH_PORT_NULL ? nil : port
+    }
+}
+
+private let cgDisplayIOServicePort: (@convention(c) (CGDirectDisplayID) -> io_service_t)? = {
+    guard let handle = dlopen("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", RTLD_LAZY),
+          let symbol = dlsym(handle, "CGDisplayIOServicePort") else { return nil }
+    return unsafeBitCast(symbol, to: (@convention(c) (CGDirectDisplayID) -> io_service_t).self)
+}()
+
+/// Resumes a continuation at most once (the operation and the timeout race for it).
+private final class ResumeOnce<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Never>?
+
+    init(_ continuation: CheckedContinuation<T, Never>) {
+        self.continuation = continuation
+    }
+
+    /// Returns true if this call resumed the continuation.
+    @discardableResult
+    func resume(returning value: T) -> Bool {
+        let pending = lock.withLock { () -> CheckedContinuation<T, Never>? in
+            defer { continuation = nil }
+            return continuation
+        }
+        pending?.resume(returning: value)
+        return pending != nil
     }
 }

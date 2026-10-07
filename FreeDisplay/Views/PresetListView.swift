@@ -7,13 +7,13 @@ struct PresetListView: View {
     @ObservedObject private var presetService = PresetService.shared
 
     var body: some View {
-        let currentMatch = presetService.currentPresetMatch()
         VStack(alignment: .leading, spacing: 0) {
             ForEach(presetService.presets) { preset in
                 PresetRow(
                     preset: preset,
-                    isCurrentMatch: currentMatch == preset.id,
-                    isApplying: presetService.applyingPresetID == preset.id
+                    isCurrentMatch: presetService.currentMatchID == preset.id,
+                    isApplying: presetService.applyingPresetID == preset.id,
+                    isDisabled: presetService.isApplying
                 )
             }
 
@@ -29,6 +29,7 @@ struct PresetRow: View {
     let preset: DisplayPreset
     let isCurrentMatch: Bool
     let isApplying: Bool
+    let isDisabled: Bool
 
     @State private var isHovered = false
 
@@ -71,6 +72,6 @@ struct PresetRow: View {
                 Label(L("Sil", "Delete"), systemImage: "trash")
             }
         }
-        .disabled(PresetService.shared.isApplying)
+        .disabled(isDisabled)
     }
 }

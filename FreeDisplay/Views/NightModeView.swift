@@ -22,6 +22,7 @@ struct NightModeView: View {
                     Spacer(minLength: 8)
                     NightModeTimeField(label: L("Bitiş", "To"), minutes: $service.endMinutes)
                 }
+                .transition(Disclosure.content)
             }
 
             if service.mode != .off {
@@ -39,6 +40,7 @@ struct NightModeView: View {
                         .accessibilityHidden(true)
                 }
                 .help(L("Filtrenin ne kadar sıcak (turuncu) olacağı", "How warm (orange) the filter is"))
+                .transition(Disclosure.content)
             }
 
             Text(statusText)
@@ -47,7 +49,6 @@ struct NightModeView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .animation(.easeInOut(duration: 0.2), value: service.mode)
     }
 
     private var statusText: String {

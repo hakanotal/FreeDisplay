@@ -2,21 +2,11 @@ import Foundation
 import CoreGraphics
 @preconcurrency import ColorSync
 
-/// ICC color profile model (RGB display-class profiles only; see makeProfileImpl).
-struct ICCProfile: Identifiable, Equatable {
-    let id: UUID
+/// ICC color profile model (RGB display-class profiles only; see `scanProfiles`).
+struct ICCProfile: Identifiable, Equatable, Sendable {
     let name: String
     let path: URL
-
-    init(name: String, path: URL) {
-        self.id = UUID()
-        self.name = name
-        self.path = path
-    }
-
-    static func == (lhs: ICCProfile, rhs: ICCProfile) -> Bool {
-        lhs.path == rhs.path
-    }
+    var id: URL { path }
 }
 
 /// Service for ICC color profile enumeration and switching.
@@ -25,55 +15,87 @@ final class ColorProfileService: @unchecked Sendable {
     static let shared = ColorProfileService()
     private init() {}
 
+    private static let searchDirectories: [URL] = [
+        URL(fileURLWithPath: "/Library/ColorSync/Profiles"),
+        URL(fileURLWithPath: "/System/Library/ColorSync/Profiles"),
+        URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/ColorSync/Profiles"),
+    ]
+
+    /// The last scan and the folder modification dates it was made from (guarded by `lock`).
+    private let lock = NSLock()
+    private var cache: (signature: [String: Date], profiles: [ICCProfile])?
+
     // MARK: - Profile Enumeration
 
-    /// Returns all installed ICC profiles sorted alphabetically.
+    /// The list from the last scan, or nil before the first one.
+    var cachedProfiles: [ICCProfile]? {
+        lock.withLock { cache?.profiles }
+    }
+
+    /// Returns all installed display profiles sorted alphabetically. Rescans only when a
+    /// profile folder changed since the last scan.
     func enumerateProfiles() async -> [ICCProfile] {
-        await Task.detached(priority: .userInitiated) {
-            var profiles: [ICCProfile] = []
-            let searchURLs: [URL] = [
-                URL(fileURLWithPath: "/Library/ColorSync/Profiles"),
-                URL(fileURLWithPath: "/System/Library/ColorSync/Profiles"),
-                URL(fileURLWithPath: NSHomeDirectory())
-                    .appendingPathComponent("Library/ColorSync/Profiles")
-            ]
-
-            var seenPaths = Set<URL>()
-            let fm = FileManager.default
-
-            for dir in searchURLs {
-                guard let enumerator = fm.enumerator(
-                    at: dir,
-                    includingPropertiesForKeys: [.isRegularFileKey],
-                    options: [.skipsHiddenFiles]
-                ) else { continue }
-
-                while let url = enumerator.nextObject() as? URL {
-                    guard !seenPaths.contains(url) else { continue }
-                    let ext = url.pathExtension.lowercased()
-                    guard ext == "icc" || ext == "icm" else { continue }
-                    seenPaths.insert(url)
-                    if let profile = Self.makeProfileImpl(from: url) {
-                        profiles.append(profile)
-                    }
-                }
+        await Task.detached(priority: .userInitiated) { [self] in
+            let signature = Self.folderSignature()
+            if let cached = lock.withLock({ cache }), cached.signature == signature {
+                return cached.profiles
             }
-
-            return profiles.sorted {
-                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-            }
+            let profiles = Self.scanProfiles()
+            lock.withLock { cache = (signature, profiles) }
+            return profiles
         }.value
     }
 
-    private static func makeProfileImpl(from url: URL) -> ICCProfile? {
-        guard let rawProfile = ColorSyncProfileCreateWithURL(url as CFURL, nil) else { return nil }
-        let profile = rawProfile.takeRetainedValue()
+    /// Modification dates of the profile folders and their subfolders (adding or removing a
+    /// profile changes its folder's date).
+    private static func folderSignature() -> [String: Date] {
+        let fm = FileManager.default
+        var signature: [String: Date] = [:]
+        for dir in searchDirectories {
+            var folders = [dir]
+            if let children = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey],
+                                                          options: [.skipsHiddenFiles]) {
+                folders += children.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            }
+            for folder in folders {
+                if let date = try? folder.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate {
+                    signature[folder.path] = date
+                }
+            }
+        }
+        return signature
+    }
 
+    private static func scanProfiles() -> [ICCProfile] {
+        var profiles: [ICCProfile] = []
+        var seenPaths = Set<URL>()
+        for dir in searchDirectories {
+            guard let enumerator = FileManager.default.enumerator(
+                at: dir,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+
+            while let url = enumerator.nextObject() as? URL {
+                let ext = url.pathExtension.lowercased()
+                guard ext == "icc" || ext == "icm", seenPaths.insert(url).inserted,
+                      let profile = makeProfile(from: url) else { continue }
+                profiles.append(profile)
+            }
+        }
+        return profiles.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
+    private static func makeProfile(from url: URL) -> ICCProfile? {
         // Only RGB display-class profiles can be assigned to a display. Applying a CMYK, gray,
         // Lab/XYZ, abstract or named-color profile makes WindowServer's color space registry
-        // abort the app (assertion in SkyLight), so those are not offered.
-        guard headerTag(profile, offset: 12) == "mntr",
-              headerTag(profile, offset: 16) == "RGB " else { return nil }
+        // abort the app (assertion in SkyLight), so those are not offered. The header is read
+        // straight from the file, so the many other profiles are never parsed.
+        guard isRGBDisplayProfile(at: url),
+              let rawProfile = ColorSyncProfileCreateWithURL(url as CFURL, nil) else { return nil }
+        let profile = rawProfile.takeRetainedValue()
 
         let name: String
         if let rawDesc = ColorSyncProfileCopyDescriptionString(profile) {
@@ -84,16 +106,15 @@ final class ColorProfileService: @unchecked Sendable {
         return ICCProfile(name: name, path: url)
     }
 
-    /// Reads a 4-character signature from the ICC header (offset 12 = device class,
-    /// 16 = data color space). Uses the raw big-endian profile bytes:
-    /// ColorSyncProfileCopyHeader returns fields byte-swapped to host order ("BGR " for RGB).
-    private static func headerTag(_ profile: ColorSyncProfile, offset: Int) -> String? {
-        guard let raw = ColorSyncProfileCopyData(profile, nil)?.takeRetainedValue() as Data?,
-              raw.count >= offset + 4 else { return nil }
-        let bytes = [UInt8](raw[raw.startIndex + offset ..< raw.startIndex + offset + 4])
-        // Non-printable bytes mean a corrupt or non-standard header.
-        guard bytes.allSatisfy({ $0 >= 0x20 && $0 <= 0x7E }) else { return nil }
-        return String(bytes: bytes, encoding: .ascii)
+    /// ICC header: bytes 12–15 are the device class ("mntr" = display), 16–19 the data color
+    /// space ("RGB "). Read raw (big-endian): ColorSyncProfileCopyHeader returns fields
+    /// byte-swapped to host order ("BGR " for RGB).
+    private static func isRGBDisplayProfile(at url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard let header = try? handle.read(upToCount: 20), header.count == 20 else { return false }
+        let bytes = [UInt8](header)
+        return bytes[12..<16].elementsEqual("mntr".utf8) && bytes[16..<20].elementsEqual("RGB ".utf8)
     }
 
     // MARK: - Current Color Info

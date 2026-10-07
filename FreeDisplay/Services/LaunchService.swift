@@ -36,15 +36,12 @@ final class LaunchService: @unchecked Sendable {
 
     // MARK: - Enable / Disable
 
+    /// Installs and enables the agent. launchd starts it at the next login; the running copy
+    /// keeps running (no restart under the user).
     @discardableResult
     func enable() -> Bool {
         guard writeAgentPlist() else { return false }
-        if Self.isManagedLaunch {
-            // Already supervised by launchd; just make sure the job isn't disabled.
-            launchctl("enable", job)
-        } else {
-            handOverToAgent(reload: true)
-        }
+        launchctl("enable", job)
         return true
     }
 
@@ -77,35 +74,34 @@ final class LaunchService: @unchecked Sendable {
     /// Called once at launch: migrates the old SMAppService login item to the agent, keeps the
     /// agent pointing at the current app location, and hands a manually opened copy over to
     /// launchd so crash restarts cover it.
-    func prepareAtLaunch() {
-        if #available(macOS 13.0, *), SMAppService.mainApp.status == .enabled {
+    /// - Returns: true when this copy handed over: the launchd instance will replace it within
+    ///   moments, so it should not start touching displays.
+    func prepareAtLaunch() -> Bool {
+        if SMAppService.mainApp.status == .enabled {
             try? SMAppService.mainApp.unregister()
             enable()
-            return
+            return false
         }
-        guard isEnabled else { return }
+        guard isEnabled else { return false }
         let moved = agentProgramPath() != Bundle.main.executablePath
         if moved {
             writeAgentPlist()
         }
-        if !Self.isManagedLaunch {
-            handOverToAgent(reload: moved)
-        }
+        guard !Self.isManagedLaunch else { return false }
+        return handOverToAgent(reload: moved)
     }
 
     // MARK: - Helpers
 
     /// Starts the agent so launchd runs a supervised instance; that instance then takes over
     /// from this manually opened one (see AppDelegate). Never called from a launchd-started process.
-    private func handOverToAgent(reload: Bool) {
+    private func handOverToAgent(reload: Bool) -> Bool {
         launchctl("enable", job)
         if reload {
             launchctl("bootout", job)
         }
         // kickstart if the job is already loaded; otherwise bootstrap it (RunAtLoad starts it).
-        if !launchctl("kickstart", job) {
-            launchctl("bootstrap", domain, agentURL.path)
-        }
+        return launchctl("kickstart", job) || launchctl("bootstrap", domain, agentURL.path)
     }
 
     @discardableResult

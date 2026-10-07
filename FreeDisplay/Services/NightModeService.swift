@@ -27,6 +27,7 @@ final class NightModeService: ObservableObject, @unchecked Sendable {
     @Published var mode: Mode = .off {
         didSet {
             defaults.set(mode.rawValue, forKey: Keys.mode)
+            updateScheduleTimer()
             evaluate(animated: true)
         }
     }
@@ -75,13 +76,10 @@ final class NightModeService: ObservableObject, @unchecked Sendable {
     /// Applies the saved state and starts watching the clock. Called once at launch.
     func start() {
         evaluate(animated: false)
-
-        scheduleTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in
-            Task { @MainActor in NightModeService.shared.evaluate(animated: true) }
-        }
+        updateScheduleTimer()
 
         // Timers don't fire during sleep, and the clock or time zone can jump: re-check right away.
-        // (FreeDisplayApp's wake handler re-applies the tint once WindowServer has settled.)
+        // (AppDelegate's wake handler re-applies the tint once WindowServer has settled.)
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         observers.append(workspaceCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
@@ -98,6 +96,22 @@ final class NightModeService: ObservableObject, @unchecked Sendable {
     }
 
     // MARK: - Schedule
+
+    /// The 30 s clock check only runs in scheduled mode.
+    private func updateScheduleTimer() {
+        guard mode == .scheduled else {
+            scheduleTimer?.invalidate()
+            scheduleTimer = nil
+            return
+        }
+        guard scheduleTimer == nil else { return }
+        let timer = Timer(timeInterval: 30, repeats: true) { _ in
+            MainActor.assumeIsolated { NightModeService.shared.evaluate(animated: true) }
+        }
+        timer.tolerance = 5
+        RunLoop.main.add(timer, forMode: .common)
+        scheduleTimer = timer
+    }
 
     /// Whether `date` falls inside the schedule. Handles ranges that cross midnight;
     /// identical start and end means the schedule never turns on.

@@ -7,12 +7,19 @@ struct DisplayModeListView: View {
     @State private var switchingModeID: Int32? = nil
     @State private var showAllModes: Bool = false
     @State private var errorMessage: String?
+    @State private var groupCache = ModeGroupCache()
 
     private var currentMode: DisplayMode? { display.currentDisplayMode }
 
-    /// Group modes by (resolution + HiDPI), sorted by resolution descending.
+    /// Grouped only when the mode list changes, not on every render (each brightness tick
+    /// re-renders views observing the display).
     private var resolutionGroups: [ResolutionGroup] {
-        let base = display.availableModes.filter {
+        groupCache.groups(for: display.availableModes, using: Self.groups(from:))
+    }
+
+    /// Group modes by (resolution + HiDPI), sorted by resolution descending.
+    private static func groups(from modes: [DisplayMode]) -> [ResolutionGroup] {
+        let base = modes.filter {
             $0.width >= 1280 && $0.height >= 720
         }
 
@@ -65,7 +72,17 @@ struct DisplayModeListView: View {
             .padding(.top, 6)
             .padding(.bottom, 2)
 
-            if resolutionGroups.isEmpty {
+            if display.isMirrorTarget {
+                // A mirror target's mode follows its source; mode IDs of one display mean
+                // nothing on another.
+                Text(L("Bu ekran başka bir ekranı yansıtıyor. Çözünürlüğü kaynak ekrandan değiştirin.",
+                       "This display mirrors another display. Change the resolution on the source display."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+            } else if resolutionGroups.isEmpty {
                 Text(L("Kullanılabilir ekran modu yok", "No display modes available"))
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -82,15 +99,15 @@ struct DisplayModeListView: View {
                         flashModeID: flashModeID,
                         onSelectMode: { switchTo($0) }
                     )
+                    .transition(Disclosure.content)
                 }
 
                 // Toggle button
                 if resolutionGroups.count > 4 || showAllModes {
-                    Button(action: {
-                        withAnimation(.easeInOut(duration: 0.2)) { showAllModes.toggle() }
-                    }) {
+                    let total = resolutionGroups.count
+                    Button(action: { showAllModes.toggle() }) {
                         HStack(spacing: 4) {
-                            Text(showAllModes ? L("Daralt", "Show Less") : L("Tümünü göster (\(resolutionGroups.count))", "Show all (\(resolutionGroups.count))"))
+                            Text(showAllModes ? L("Daralt", "Show Less") : L("Tümünü göster (\(total))", "Show all (\(total))"))
                                 .font(.caption)
                                 .foregroundColor(.accentColor)
                             Image(systemName: showAllModes ? "chevron.up" : "chevron.down")
@@ -121,7 +138,7 @@ struct DisplayModeListView: View {
                 .cornerRadius(6)
                 .padding(.horizontal, 8)
                 .padding(.bottom, 6)
-                .transition(.opacity)
+                .transition(Disclosure.content)
             }
         }
     }
@@ -151,22 +168,13 @@ struct DisplayModeListView: View {
             }
             if success {
                 try? await Task.sleep(nanoseconds: 300_000_000)
-                let refreshedMode = await Task.detached(priority: .userInitiated) {
-                    DisplayMode.currentMode(for: displayID)
-                }.value
-                if let rm = refreshedMode, rm.width == mode.width && rm.height == mode.height {
-                    display.currentDisplayMode = rm
-                } else {
-                    display.currentDisplayMode = mode
-                }
+                display.refreshCurrentMode()
                 errorMessage = nil
             } else {
-                withAnimation {
-                    errorMessage = L("\(mode.resolutionString) moduna geçilemedi, tekrar deneyin", "Couldn't switch to \(mode.resolutionString), please try again")
-                }
+                errorMessage = L("\(mode.resolutionString) moduna geçilemedi, tekrar deneyin", "Couldn't switch to \(mode.resolutionString), please try again")
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
-                    withAnimation { errorMessage = nil }
+                    errorMessage = nil
                 }
             }
             isSwitching = false
@@ -176,6 +184,21 @@ struct DisplayModeListView: View {
 }
 
 // MARK: - Data model
+
+/// Remembers the groups for the last mode list (a reference, so reading it in `body` doesn't
+/// trigger a re-render).
+private final class ModeGroupCache {
+    private var modes: [DisplayMode]?
+    private var groups: [ResolutionGroup] = []
+
+    func groups(for modes: [DisplayMode], using makeGroups: ([DisplayMode]) -> [ResolutionGroup]) -> [ResolutionGroup] {
+        if self.modes != modes {
+            self.modes = modes
+            groups = makeGroups(modes)
+        }
+        return groups
+    }
+}
 
 private struct ResolutionGroup: Identifiable {
     let width: Int
@@ -264,7 +287,7 @@ private struct ResolutionRow: View {
                         .font(.caption2)
                         .foregroundColor(.secondary)
                         .rotationEffect(.degrees(showRates ? 90 : 0))
-                        .animation(.easeInOut(duration: 0.2), value: showRates)
+                        .animation(Disclosure.chevron, value: showRates)
                 }
             }
             .padding(.horizontal, 12)
@@ -280,7 +303,7 @@ private struct ResolutionRow: View {
             .onTapGesture {
                 guard !isSwitching else { return }
                 if group.hasMultipleRates {
-                    withAnimation(.easeInOut(duration: 0.2)) { showRates.toggle() }
+                    showRates.toggle()
                 } else {
                     onSelectMode(group.bestMode)
                 }
@@ -296,7 +319,7 @@ private struct ResolutionRow: View {
                 )
                 .padding(.horizontal, 12)
                 .padding(.vertical, 4)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .transition(Disclosure.content)
             }
         }
     }

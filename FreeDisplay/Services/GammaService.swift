@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+@preconcurrency import ColorSync
 
 /// Per-display software image adjustment parameters.
 /// All slider values are in the range -100...+100 with 0 = neutral,
@@ -28,82 +29,135 @@ struct GammaAdjustment: Equatable {
     }
 }
 
+/// A display's calibration curve from its ColorSync profile's `vcgt` tag, sampled at 256
+/// points per channel. ColorSync loads it into the display's transfer table; writing the
+/// table replaces it, so GammaService composes its own curve on top of this one.
+struct CalibrationCurve: Equatable {
+    static let sampleCount = 256
+
+    var channels: [[Double]]   // red, green, blue; each `sampleCount` values in 0…1
+
+    /// The curve's output for `channel` at input `x` (0…1), linearly interpolated.
+    func value(channel: Int, at x: Double) -> Double {
+        let samples = channels[channel]
+        let position = max(0, min(1, x)) * Double(samples.count - 1)
+        let index = Int(position)
+        guard index < samples.count - 1 else { return samples[samples.count - 1] }
+        let fraction = position - Double(index)
+        return samples[index] + (samples[index + 1] - samples[index]) * fraction
+    }
+
+    /// Parses a `vcgt` tag (with or without its 8-byte type header). Returns nil for a
+    /// malformed tag and for an identity curve (nothing to compose with).
+    ///
+    ///   gammaType 0, table:   channels (UInt16), entryCount (UInt16), entrySize (UInt16: 1 or 2),
+    ///                         then big-endian entries, channel after channel
+    ///   gammaType 1, formula: gamma, min, max per channel (s15Fixed16), red, green, blue
+    static func parse(vcgt data: Data) -> CalibrationCurve? {
+        let bytes = [UInt8](data)
+        var offset = 0
+        if bytes.count >= 4, bytes[0] == 0x76, bytes[1] == 0x63, bytes[2] == 0x67, bytes[3] == 0x74 {
+            offset = 8  // 'vcgt' signature + reserved
+        }
+        func uint16(_ at: Int) -> Int? {
+            at + 2 <= bytes.count ? Int(bytes[at]) << 8 | Int(bytes[at + 1]) : nil
+        }
+        func uint32(_ at: Int) -> UInt32? {
+            guard at + 4 <= bytes.count else { return nil }
+            return UInt32(bytes[at]) << 24 | UInt32(bytes[at + 1]) << 16 | UInt32(bytes[at + 2]) << 8 | UInt32(bytes[at + 3])
+        }
+        func fixed(_ at: Int) -> Double? {
+            uint32(at).map { Double(Int32(bitPattern: $0)) / 65536.0 }
+        }
+
+        var channels: [[Double]] = []
+        switch uint32(offset) {
+        case 0?:
+            guard let count = uint16(offset + 4), let entries = uint16(offset + 6), let size = uint16(offset + 8),
+                  count == 1 || count == 3, entries >= 2, size == 1 || size == 2 else { return nil }
+            let start = offset + 10
+            guard start + count * entries * size <= bytes.count else { return nil }
+            let maxValue = size == 1 ? 255.0 : 65535.0
+            for channel in 0..<count {
+                var raw: [Double] = []
+                raw.reserveCapacity(entries)
+                for entry in 0..<entries {
+                    let at = start + (channel * entries + entry) * size
+                    let value = size == 1 ? Int(bytes[at]) : Int(bytes[at]) << 8 | Int(bytes[at + 1])
+                    raw.append(Double(value) / maxValue)
+                }
+                channels.append(resample(raw))
+            }
+            if count == 1 { channels = [channels[0], channels[0], channels[0]] }
+        case 1?:
+            for channel in 0..<3 {
+                let base = offset + 4 + channel * 12
+                guard let gamma = fixed(base), let low = fixed(base + 4), let high = fixed(base + 8),
+                      gamma > 0 else { return nil }
+                channels.append((0..<sampleCount).map {
+                    low + (high - low) * pow(Double($0) / Double(sampleCount - 1), gamma)
+                })
+            }
+        default:
+            return nil
+        }
+
+        channels = channels.map { $0.map { max(0, min(1, $0)) } }
+        let isIdentity = channels.allSatisfy { samples in
+            samples.indices.allSatisfy { abs(samples[$0] - Double($0) / Double(sampleCount - 1)) < 0.5 / 255 }
+        }
+        return isIdentity ? nil : CalibrationCurve(channels: channels)
+    }
+
+    private static func resample(_ raw: [Double]) -> [Double] {
+        guard raw.count != sampleCount else { return raw }
+        return (0..<sampleCount).map { index in
+            let position = Double(index) / Double(sampleCount - 1) * Double(raw.count - 1)
+            let lower = Int(position)
+            guard lower < raw.count - 1 else { return raw[raw.count - 1] }
+            let fraction = position - Double(lower)
+            return raw[lower] + (raw[lower + 1] - raw[lower]) * fraction
+        }
+    }
+}
+
 /// The only writer of display transfer functions (`CGSetDisplayTransferByFormula/Table`).
-/// Each write combines three inputs: the per-display image adjustment, the global night
-/// mode tint and BrightnessService's per-display software brightness factor.
+/// Each write combines four inputs: the per-display image adjustment, the global night mode
+/// tint, BrightnessService's software brightness factor and the profile's calibration curve.
+@MainActor
 final class GammaService: @unchecked Sendable {
     static let shared = GammaService()
-    private var terminateObserver: NSObjectProtocol?
-    private let adjustmentsLock = NSLock()
-
-    /// Set once this process writes a transfer function (guarded by adjustmentsLock).
-    /// A process that never wrote one (e.g. a duplicate launch that quits right away)
-    /// must not reset the tables another instance owns.
-    private var hasWrittenTransfer = false
-
-    private init() {
-        terminateObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.restoreIdentityOnQuit()
-        }
-    }
-
-    deinit {
-        if let obs = terminateObserver {
-            NotificationCenter.default.removeObserver(obs)
-        }
-    }
-
-    private func restoreIdentityOnQuit() {
-        guard adjustmentsLock.withLock({ hasWrittenTransfer }) else { return }
-        for displayID in onlineDisplayIDs() {
-            let size = 256
-            var r = (0..<size).map { CGGammaValue($0) / CGGammaValue(size - 1) }
-            var g = r; var b = r
-            CGSetDisplayTransferByTable(displayID, UInt32(size), &r, &g, &b)
-        }
-    }
-
-    // MARK: - Active Adjustment Tracking
+    private init() {}
 
     /// The current image adjustment per display (including paused ones).
     private var activeAdjustments: [CGDirectDisplayID: GammaAdjustment] = [:]
 
-    /// The adjustment to show in the UI: the live one, else the saved one.
-    func currentAdjustment(for displayID: CGDirectDisplayID) -> GammaAdjustment? {
-        adjustmentsLock.withLock { activeAdjustments[displayID] } ?? loadSavedState(for: displayID)
-    }
+    /// Displays whose transfer function FreeDisplay has changed from the profile's own curve.
+    /// Only these are written when they return to neutral and restored at quit, so displays
+    /// FreeDisplay never touched (and other processes' gamma) are left alone.
+    private var modifiedDisplays: Set<CGDirectDisplayID> = []
 
-    /// Rewrites the display's transfer function from the current state: the image
-    /// adjustment (neutral if none or paused), the night tint and software brightness.
-    func reapply(for displayID: CGDirectDisplayID) {
-        let adj = adjustmentsLock.withLock { activeAdjustments[displayID] }
-        if let adj, !adj.isPaused {
-            applyInternal(adj, for: displayID)
-        } else {
-            applyInternal(GammaAdjustment(), for: displayID)
-        }
-    }
+    /// Calibration curve per display (`.some(nil)`: the profile has none). Loaded lazily.
+    private var calibrationCurves: [CGDirectDisplayID: CalibrationCurve?] = [:]
+
+    /// Debounced saving of adjustments (slider changes apply live, saving waits for a pause).
+    private var saveTasks: [CGDirectDisplayID: Task<Void, Never>] = [:]
+    private var pendingSaves: [CGDirectDisplayID: () -> Void] = [:]
 
     // MARK: - Night Mode Tint
 
     private static let neutralTint = (r: 1.0, g: 1.0, b: 1.0)
 
-    /// Global per-channel white-point multiplier set by NightModeService (guarded by adjustmentsLock).
+    /// Global per-channel white-point multiplier set by NightModeService.
     private var nightTint = GammaService.neutralTint
 
     var isNightTintActive: Bool {
-        adjustmentsLock.withLock { nightTint != Self.neutralTint }
+        nightTint != Self.neutralTint
     }
 
     /// Sets the night tint and rewrites every online display so it takes effect immediately.
-    /// Displays without an image adjustment get a neutral formula (tint × software brightness),
-    /// which is the identity curve once the tint returns to neutral.
     func setNightTint(r: Double, g: Double, b: Double) {
-        adjustmentsLock.withLock { nightTint = (r, g, b) }
+        nightTint = (r, g, b)
         for displayID in onlineDisplayIDs() {
             reapply(for: displayID)
         }
@@ -120,40 +174,25 @@ final class GammaService: @unchecked Sendable {
         )
     }
 
-    private func onlineDisplayIDs() -> [CGDirectDisplayID] {
-        var displayCount: UInt32 = 0
-        CGGetOnlineDisplayList(0, nil, &displayCount)
-        var displays = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
-        CGGetOnlineDisplayList(displayCount, &displays, &displayCount)
-        return Array(displays.prefix(Int(displayCount)))
+    // MARK: - Image adjustments
+
+    /// The adjustment to show in the UI: the live one, else the saved one.
+    func currentAdjustment(for displayID: CGDirectDisplayID) -> GammaAdjustment? {
+        activeAdjustments[displayID] ?? loadSavedState(for: displayID)
     }
 
-    /// Scales each channel's output range by the night tint and the software brightness
-    /// factor. Both ends are scaled so inverted curves are dimmed and tinted too.
-    private func applyTintAndBrightness(_ p: inout ChannelParams, for displayID: CGDirectDisplayID) {
-        let tint = adjustmentsLock.withLock { nightTint }
-        let brightnessFactor = max(0.05, BrightnessService.shared.currentSoftwareBrightness(for: displayID) ?? 1.0)
-        let r = brightnessFactor * tint.r
-        let g = brightnessFactor * tint.g
-        let b = brightnessFactor * tint.b
-        p.rLo *= r; p.rHi *= r
-        p.gLo *= g; p.gHi *= g
-        p.bLo *= b; p.bHi *= b
-    }
-
-    // MARK: - Public API
-
-    /// Applies an image adjustment to a display and saves it. A paused adjustment is kept
-    /// but the display shows the unadjusted image (software brightness and night mode stay).
-    /// A neutral adjustment removes the adjustment altogether.
+    /// Applies an image adjustment to a display right away and saves it shortly after (so a
+    /// slider can call this on every change). A paused adjustment is kept but the display shows
+    /// the unadjusted image (software brightness and night mode stay). A neutral adjustment
+    /// removes the adjustment altogether.
     func apply(_ adj: GammaAdjustment, for displayID: CGDirectDisplayID) {
         guard !adj.isNeutral else {
             resetSingleDisplay(displayID)
             return
         }
-        adjustmentsLock.withLock { activeAdjustments[displayID] = adj }
-        saveState(adj, for: displayID)
-        applyInternal(adj.isPaused ? GammaAdjustment() : adj, for: displayID)
+        activeAdjustments[displayID] = adj
+        scheduleSave(adj, for: displayID)
+        write(adj.isPaused ? GammaAdjustment() : adj, for: displayID)
     }
 
     /// Removes the image adjustment for a single display (in memory and saved) and rewrites
@@ -161,32 +200,102 @@ final class GammaService: @unchecked Sendable {
     /// Use this instead of the global `CGDisplayRestoreColorSyncSettings()`. It does not touch
     /// the display's ColorSync profile.
     func resetSingleDisplay(_ displayID: CGDirectDisplayID) {
-        adjustmentsLock.withLock { _ = activeAdjustments.removeValue(forKey: displayID) }
-        clearSavedState(for: displayID)
-        applyInternal(GammaAdjustment(), for: displayID)
+        activeAdjustments.removeValue(forKey: displayID)
+        saveTasks.removeValue(forKey: displayID)?.cancel()
+        pendingSaves.removeValue(forKey: displayID)
+        UserDefaults.standard.removeObject(forKey: stateKey(for: displayID))
+        write(GammaAdjustment(), for: displayID)
     }
 
-    private static func stateKey(for displayID: CGDirectDisplayID) -> String {
-        "fd.GammaService.savedAdjustment.\(DisplayInfo.uuidString(for: displayID))"
+    // MARK: - Reapplying
+
+    /// Rewrites the display's transfer function from the current state: the image
+    /// adjustment (neutral if none or paused), the night tint and software brightness.
+    func reapply(for displayID: CGDirectDisplayID) {
+        let adj = activeAdjustments[displayID]
+        write(adj.map { $0.isPaused ? GammaAdjustment() : $0 } ?? GammaAdjustment(), for: displayID)
     }
 
-    private func saveState(_ adj: GammaAdjustment, for displayID: CGDirectDisplayID) {
-        let dict: [String: Any] = [
-            "contrast": adj.contrast,
-            "gammaVal": adj.gammaVal,
-            "gain": adj.gain,
-            "colorTemperature": adj.colorTemperature,
-            "rGamma": adj.rGamma, "gGamma": adj.gGamma, "bGamma": adj.bGamma,
-            "rGain": adj.rGain,   "gGain": adj.gGain,   "bGain": adj.bGain,
-            "quantizationLevels": adj.quantizationLevels,
-            "isInverted": adj.isInverted,
-            "isPaused": adj.isPaused
-        ]
-        UserDefaults.standard.set(dict, forKey: GammaService.stateKey(for: displayID))
+    /// Re-applies the display's state after wake, reconnect, launch, a mode or profile change
+    /// (the system rewrites transfer tables then). Loads the saved adjustment the first time.
+    /// Cheap and idempotent: displays with nothing to apply are left alone.
+    func reapplyIfNeeded(for displayID: CGDirectDisplayID) {
+        if activeAdjustments[displayID] == nil, let saved = loadSavedState(for: displayID), !saved.isNeutral {
+            activeAdjustments[displayID] = saved
+        }
+        let hasAdjustment = activeAdjustments[displayID].map { !$0.isPaused } ?? false
+        let hasSoftwareBrightness = BrightnessService.shared.effectiveSoftwareBrightness(for: displayID) != nil
+        guard hasAdjustment || hasSoftwareBrightness || isNightTintActive
+                || modifiedDisplays.contains(displayID) else { return }
+        reapply(for: displayID)
+    }
+
+    // MARK: - Lifecycle
+
+    /// Drops in-memory state for a display ID that was removed or now belongs to another
+    /// monitor. Saved (UUID-keyed) adjustments stay and come back with the right monitor.
+    func forgetDisplay(_ displayID: CGDirectDisplayID) {
+        flushSave(for: displayID)
+        activeAdjustments.removeValue(forKey: displayID)
+        modifiedDisplays.remove(displayID)
+        calibrationCurves.removeValue(forKey: displayID)
+    }
+
+    /// The display profile may have changed (new profile, wake): read calibration curves again.
+    func invalidateCalibration() {
+        calibrationCurves.removeAll()
+    }
+
+    /// At quit: saves pending adjustments and gives every display FreeDisplay changed its
+    /// profile's own curve back. A process that never wrote a transfer function (e.g. a
+    /// duplicate launch that quits right away) touches nothing.
+    func restoreSystemCurves() {
+        for displayID in Array(pendingSaves.keys) { flushSave(for: displayID) }
+        for displayID in modifiedDisplays {
+            writeProfileCurve(for: displayID)
+        }
+        modifiedDisplays.removeAll()
+    }
+
+    // MARK: - Persistence
+
+    private func stateKey(for displayID: CGDirectDisplayID) -> String {
+        let uuid = DisplayManagerAccessor.shared.displays.first { $0.displayID == displayID }?.displayUUID
+            ?? DisplayInfo.uuidString(for: displayID)
+        return "fd.GammaService.savedAdjustment.\(uuid)"
+    }
+
+    private func scheduleSave(_ adj: GammaAdjustment, for displayID: CGDirectDisplayID) {
+        let key = stateKey(for: displayID)
+        pendingSaves[displayID] = {
+            let dict: [String: Any] = [
+                "contrast": adj.contrast,
+                "gammaVal": adj.gammaVal,
+                "gain": adj.gain,
+                "colorTemperature": adj.colorTemperature,
+                "rGamma": adj.rGamma, "gGamma": adj.gGamma, "bGamma": adj.bGamma,
+                "rGain": adj.rGain,   "gGain": adj.gGain,   "bGain": adj.bGain,
+                "quantizationLevels": adj.quantizationLevels,
+                "isInverted": adj.isInverted,
+                "isPaused": adj.isPaused
+            ]
+            UserDefaults.standard.set(dict, forKey: key)
+        }
+        saveTasks[displayID]?.cancel()
+        saveTasks[displayID] = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
+            self?.flushSave(for: displayID)
+        }
+    }
+
+    private func flushSave(for displayID: CGDirectDisplayID) {
+        saveTasks.removeValue(forKey: displayID)?.cancel()
+        pendingSaves.removeValue(forKey: displayID)?()
     }
 
     private func loadSavedState(for displayID: CGDirectDisplayID) -> GammaAdjustment? {
-        guard let dict = UserDefaults.standard.dictionary(forKey: GammaService.stateKey(for: displayID)) else { return nil }
+        guard let dict = UserDefaults.standard.dictionary(forKey: stateKey(for: displayID)) else { return nil }
         var adj = GammaAdjustment()
         adj.contrast           = dict["contrast"]           as? Double ?? 0
         adj.gammaVal           = dict["gammaVal"]           as? Double ?? 0
@@ -204,25 +313,6 @@ final class GammaService: @unchecked Sendable {
         return adj
     }
 
-    private func clearSavedState(for displayID: CGDirectDisplayID) {
-        UserDefaults.standard.removeObject(forKey: GammaService.stateKey(for: displayID))
-    }
-
-    /// Re-applies the display's state after wake from sleep, reconnect or launch (the system
-    /// resets transfer tables). Prefers the live adjustment over the saved one. No-op when
-    /// there is nothing to apply.
-    func reapplyIfNeeded(for displayID: CGDirectDisplayID) {
-        var adj = adjustmentsLock.withLock { activeAdjustments[displayID] }
-        if adj == nil, let saved = loadSavedState(for: displayID), !saved.isNeutral {
-            adjustmentsLock.withLock { activeAdjustments[displayID] = saved }
-            adj = saved
-        }
-        let hasAdjustment = adj.map { !$0.isPaused } ?? false
-        let hasSoftwareBrightness = BrightnessService.shared.currentSoftwareBrightness(for: displayID) != nil
-        guard hasAdjustment || hasSoftwareBrightness || isNightTintActive else { return }
-        reapply(for: displayID)
-    }
-
     // MARK: - Transfer function
 
     private struct ChannelParams {
@@ -238,19 +328,51 @@ final class GammaService: @unchecked Sendable {
         }
     }
 
-    private func applyInternal(_ adj: GammaAdjustment, for displayID: CGDirectDisplayID) {
+    /// Writes the display's transfer function: `adj` combined with the night tint, the
+    /// software brightness factor and the profile's calibration curve. When all of them are
+    /// neutral, the profile's own curve is restored (once) instead.
+    private func write(_ adj: GammaAdjustment, for displayID: CGDirectDisplayID) {
+        let brightnessFactor = BrightnessService.shared.effectiveSoftwareBrightness(for: displayID) ?? 1.0
+        let tint = nightTint
+
+        if adj.isNeutral && brightnessFactor >= 1.0 && tint == Self.neutralTint {
+            if modifiedDisplays.remove(displayID) != nil {
+                writeProfileCurve(for: displayID)
+            }
+            return
+        }
+        modifiedDisplays.insert(displayID)
+
         var p = channelParams(for: adj)
-        // Incorporate software brightness and night tint so the three inputs never
-        // overwrite each other's transfer function.
-        applyTintAndBrightness(&p, for: displayID)
-        adjustmentsLock.withLock { hasWrittenTransfer = true }
-        if adj.quantizationLevels < 256 || p.exceedsUnitRange {
-            applyTable(p, levels: adj.quantizationLevels, for: displayID)
+        // Scale both ends of each channel so inverted curves are dimmed and tinted too.
+        let r = brightnessFactor * tint.r
+        let g = brightnessFactor * tint.g
+        let b = brightnessFactor * tint.b
+        p.rLo *= r; p.rHi *= r
+        p.gLo *= g; p.gHi *= g
+        p.bLo *= b; p.bHi *= b
+
+        let calibration = calibrationCurve(for: displayID)
+        if calibration != nil || adj.quantizationLevels < 256 || p.exceedsUnitRange {
+            writeTable(p, levels: adj.quantizationLevels, calibration: calibration, for: displayID)
         } else {
             CGSetDisplayTransferByFormula(displayID,
                 CGGammaValue(p.rLo), CGGammaValue(p.rHi), CGGammaValue(p.rGam),
                 CGGammaValue(p.gLo), CGGammaValue(p.gHi), CGGammaValue(p.gGam),
                 CGGammaValue(p.bLo), CGGammaValue(p.bHi), CGGammaValue(p.bGam))
+        }
+    }
+
+    /// The transfer function ColorSync itself would set: the profile's calibration curve,
+    /// or identity when it has none.
+    private func writeProfileCurve(for displayID: CGDirectDisplayID) {
+        if let calibration = calibrationCurve(for: displayID) {
+            var red = calibration.channels[0].map { CGGammaValue($0) }
+            var green = calibration.channels[1].map { CGGammaValue($0) }
+            var blue = calibration.channels[2].map { CGGammaValue($0) }
+            CGSetDisplayTransferByTable(displayID, UInt32(red.count), &red, &green, &blue)
+        } else {
+            CGSetDisplayTransferByFormula(displayID, 0, 1, 1, 0, 1, 1, 0, 1, 1)
         }
     }
 
@@ -342,10 +464,12 @@ final class GammaService: @unchecked Sendable {
         return (r, g, b)
     }
 
-    // MARK: - Table mode (quantization, out-of-range curves)
+    // MARK: - Table mode (quantization, out-of-range curves, calibration)
 
-    private func applyTable(_ p: ChannelParams, levels: Int, for displayID: CGDirectDisplayID) {
-        let capacity = 256
+    /// Samples `final(x) = calibration(quantize(clamp(lo + (hi − lo) · x^gamma)))` per channel.
+    private func writeTable(_ p: ChannelParams, levels: Int, calibration: CalibrationCurve?,
+                            for displayID: CGDirectDisplayID) {
+        let capacity = CalibrationCurve.sampleCount
         let quantize = levels < 256
         let steps = Double(max(2, min(255, levels)))
 
@@ -353,22 +477,50 @@ final class GammaService: @unchecked Sendable {
         var greenTable = [CGGammaValue](repeating: 0, count: capacity)
         var blueTable  = [CGGammaValue](repeating: 0, count: capacity)
 
-        for i in 0..<capacity {
-            let input = Double(i) / Double(capacity - 1)
-
-            func tableValue(lo: Double, hi: Double, gam: Double) -> CGGammaValue {
-                let raw = lo + (hi - lo) * pow(input, gam)
-                let clamped = max(0.0, min(1.0, raw))
-                // Quantize to `levels` discrete steps
-                return CGGammaValue(quantize ? floor(clamped * steps) / steps : clamped)
-            }
-
-            redTable[i]   = tableValue(lo: p.rLo, hi: p.rHi, gam: p.rGam)
-            greenTable[i] = tableValue(lo: p.gLo, hi: p.gHi, gam: p.gGam)
-            blueTable[i]  = tableValue(lo: p.bLo, hi: p.bHi, gam: p.bGam)
+        func sample(_ input: Double, lo: Double, hi: Double, gam: Double, channel: Int) -> CGGammaValue {
+            var value = max(0.0, min(1.0, lo + (hi - lo) * pow(input, gam)))
+            if quantize { value = floor(value * steps) / steps }
+            if let calibration { value = calibration.value(channel: channel, at: value) }
+            return CGGammaValue(value)
         }
 
-        CGSetDisplayTransferByTable(displayID, UInt32(capacity),
-                                    &redTable, &greenTable, &blueTable)
+        for i in 0..<capacity {
+            let input = Double(i) / Double(capacity - 1)
+            redTable[i]   = sample(input, lo: p.rLo, hi: p.rHi, gam: p.rGam, channel: 0)
+            greenTable[i] = sample(input, lo: p.gLo, hi: p.gHi, gam: p.gGam, channel: 1)
+            blueTable[i]  = sample(input, lo: p.bLo, hi: p.bHi, gam: p.bGam, channel: 2)
+        }
+
+        CGSetDisplayTransferByTable(displayID, UInt32(capacity), &redTable, &greenTable, &blueTable)
+    }
+
+    // MARK: - Calibration curve
+
+    private func calibrationCurve(for displayID: CGDirectDisplayID) -> CalibrationCurve? {
+        if let cached = calibrationCurves[displayID] { return cached }
+        let curve = Self.loadCalibrationCurve(for: displayID)
+        calibrationCurves[displayID] = .some(curve)
+        return curve
+    }
+
+    /// Reads the `vcgt` tag of the display's active ColorSync profile.
+    private static func loadCalibrationCurve(for displayID: CGDirectDisplayID) -> CalibrationCurve? {
+        var profile = ColorSyncProfileCreateWithDisplayID(displayID)?.takeRetainedValue()
+        if profile == nil, let data = CGDisplayCopyColorSpace(displayID).copyICCData() {
+            profile = ColorSyncProfileCreate(data, nil)?.takeRetainedValue()
+        }
+        guard let profile,
+              let tag = ColorSyncProfileCopyTag(profile, "vcgt" as CFString)?.takeRetainedValue() else { return nil }
+        return CalibrationCurve.parse(vcgt: tag as Data)
+    }
+
+    // MARK: - Helpers
+
+    private func onlineDisplayIDs() -> [CGDirectDisplayID] {
+        var displayCount: UInt32 = 0
+        CGGetOnlineDisplayList(0, nil, &displayCount)
+        var displays = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
+        CGGetOnlineDisplayList(displayCount, &displays, &displayCount)
+        return Array(displays.prefix(Int(displayCount)))
     }
 }

@@ -3,13 +3,25 @@ import SwiftUI
 /// Expandable section for ICC color profile selection.
 /// Lists all installed profiles alphabetically; highlights the active one.
 struct ColorProfileView: View {
-    @ObservedObject var display: DisplayInfo
-    @State private var profiles: [ICCProfile] = []
-    @State private var isLoading: Bool = false
+    /// Only the (constant) display ID is read, so brightness changes don't re-render this.
+    let display: DisplayInfo
+    @State private var recommended: [ICCProfile]
+    @State private var others: [ICCProfile]
+    @State private var isLoading: Bool
     @State private var selectedPath: URL?
     @State private var applyingPath: URL? = nil
     @State private var applyError: String?
     @State private var applySuccess = false
+
+    /// Shows the cached list right away; the first scan of the session shows a spinner.
+    init(display: DisplayInfo) {
+        self.display = display
+        let cached = ColorProfileService.shared.cachedProfiles
+        let groups = Self.split(cached ?? [])
+        _recommended = State(initialValue: groups.recommended)
+        _others = State(initialValue: groups.others)
+        _isLoading = State(initialValue: cached == nil)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -24,7 +36,7 @@ struct ColorProfileView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
-            } else if profiles.isEmpty {
+            } else if recommended.isEmpty && others.isEmpty {
                 Text(L("Profil bulunamadı", "No profiles found"))
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -52,9 +64,6 @@ struct ColorProfileView: View {
                 }
 
                 // Recommended profiles (display-specific or well-known)
-                let recommended = recommendedProfiles
-                let rest = otherProfiles
-
                 if !recommended.isEmpty {
                     SectionBadge(title: L("Önerilen", "Recommended"))
                     ForEach(recommended) { profile in
@@ -69,9 +78,9 @@ struct ColorProfileView: View {
                     }
                 }
 
-                if !rest.isEmpty {
+                if !others.isEmpty {
                     SectionBadge(title: L("Tüm Profiller", "All Profiles"))
-                    ForEach(rest) { profile in
+                    ForEach(others) { profile in
                         ProfileRow(
                             profile: profile,
                             isSelected: selectedPath == profile.path,
@@ -89,54 +98,55 @@ struct ColorProfileView: View {
 
     // MARK: - Grouping
 
-    private var recommendedProfiles: [ICCProfile] {
+    /// Display-specific or well-known profiles first, the rest after.
+    private static func split(_ profiles: [ICCProfile]) -> (recommended: [ICCProfile], others: [ICCProfile]) {
         let keywords = ["sRGB", "P3", "Display", "LCD", "Apple", "Color LCD"]
-        return profiles.filter { p in
-            keywords.contains { p.name.localizedCaseInsensitiveContains($0) }
+        var recommended: [ICCProfile] = []
+        var others: [ICCProfile] = []
+        for profile in profiles {
+            if keywords.contains(where: { profile.name.localizedCaseInsensitiveContains($0) }) {
+                recommended.append(profile)
+            } else {
+                others.append(profile)
+            }
         }
-    }
-
-    private var otherProfiles: [ICCProfile] {
-        let recommended = Set(recommendedProfiles.map(\.path))
-        return profiles.filter { !recommended.contains($0.path) }
+        return (recommended, others)
     }
 
     // MARK: - Actions
 
-    @MainActor
     private func loadProfiles() async {
-        isLoading = true
-        let displayID = display.displayID
-        let svc = ColorProfileService.shared
-        let loaded = await svc.enumerateProfiles()
-        let currentURL = svc.currentProfileURL(for: displayID)
-        profiles = loaded
-        selectedPath = currentURL
+        let service = ColorProfileService.shared
+        selectedPath = service.currentProfileURL(for: display.displayID)
+        let loaded = await service.enumerateProfiles()
+        let groups = Self.split(loaded)
+        if groups.recommended != recommended { recommended = groups.recommended }
+        if groups.others != others { others = groups.others }
         isLoading = false
     }
 
-    @MainActor
     private func applyProfile(_ profile: ICCProfile) {
         guard applyingPath == nil else { return }
         applyError = nil
         applySuccess = false
+        applyingPath = profile.path
+        let displayID = display.displayID
         Task { @MainActor in
-            applyingPath = profile.path
-            defer { applyingPath = nil }
-            let success = ColorProfileService.shared.setProfile(profile, for: display.displayID)
+            // Off the main thread, so the row's spinner shows while ColorSync works.
+            // (AppDelegate re-applies FreeDisplay's gamma when the color space changes.)
+            let success = await Task.detached(priority: .userInitiated) {
+                ColorProfileService.shared.setProfile(profile, for: displayID)
+            }.value
+            applyingPath = nil
             if success {
                 selectedPath = profile.path
                 applySuccess = true
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                    applySuccess = false
-                }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                applySuccess = false
             } else {
                 applyError = L("Uygulanamadı, tekrar deneyin", "Couldn't apply, please try again")
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 3_000_000_000)
-                    applyError = nil
-                }
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                applyError = nil
             }
         }
     }

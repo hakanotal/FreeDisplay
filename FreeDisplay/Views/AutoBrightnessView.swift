@@ -5,9 +5,8 @@ struct AutoBrightnessView: View {
     @ObservedObject private var service = AutoBrightnessService.shared
     @State private var isHovered = false
 
-    /// True only after the service has polled at least once and found no builtin display.
     private var builtinUnavailable: Bool {
-        service.hasPolled && service.builtinBrightness <= 0
+        !service.builtinAvailable
     }
 
     var body: some View {
@@ -27,7 +26,8 @@ struct AutoBrightnessView: View {
                     .toggleStyle(.switch)
                     .labelsHidden()
                     .controlSize(.small)
-                    .disabled(builtinUnavailable)
+                    // Never lock the toggle while it's on (lid closed): it must stay switchable off.
+                    .disabled(builtinUnavailable && !service.isEnabled)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 7)

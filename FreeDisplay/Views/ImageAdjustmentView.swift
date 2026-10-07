@@ -1,24 +1,45 @@
 import SwiftUI
 
 /// Expandable "Image Adjustments" section — 11 sliders for software gamma/image adjustments.
-/// Mirrors BetterDisplay's Image Adjustment panel.
+/// Mirrors BetterDisplay's Image Adjustment panel. Changes apply live; GammaService saves
+/// them shortly after the last change.
 struct ImageAdjustmentView: View {
-    @ObservedObject var display: DisplayInfo
+    /// Only the (constant) display ID is read, so brightness changes don't re-render this.
+    let display: DisplayInfo
 
     // MARK: - Local adjustment state (mirrors GammaAdjustment)
-    @State private var contrast: Double = 0           // -100 … +100
-    @State private var gammaVal: Double = 0           // -100 … +100
-    @State private var gain: Double = 0               // -100 … +100
-    @State private var colorTemperature: Double = 0   // -100 … +100
-    @State private var quantLevels: Double = 256      // 2 … 256 (256 = ∞)
-    @State private var rGamma: Double = 0
-    @State private var gGamma: Double = 0
-    @State private var bGamma: Double = 0
-    @State private var rGain: Double = 0
-    @State private var gGain: Double = 0
-    @State private var bGain: Double = 0
-    @State private var isInverted: Bool = false
-    @State private var isPaused: Bool = false
+    @State private var contrast: Double           // -100 … +100
+    @State private var gammaVal: Double           // -100 … +100
+    @State private var gain: Double               // -100 … +100
+    @State private var colorTemperature: Double   // -100 … +100
+    @State private var quantLevels: Double        // 2 … 256 (256 = ∞)
+    @State private var rGamma: Double
+    @State private var gGamma: Double
+    @State private var bGamma: Double
+    @State private var rGain: Double
+    @State private var gGain: Double
+    @State private var bGain: Double
+    @State private var isInverted: Bool
+    @State private var isPaused: Bool
+
+    /// The live adjustment is already applied; the sliders just start from it.
+    init(display: DisplayInfo) {
+        self.display = display
+        let current = GammaService.shared.currentAdjustment(for: display.displayID) ?? GammaAdjustment()
+        _contrast = State(initialValue: current.contrast)
+        _gammaVal = State(initialValue: current.gammaVal)
+        _gain = State(initialValue: current.gain)
+        _colorTemperature = State(initialValue: current.colorTemperature)
+        _quantLevels = State(initialValue: Double(current.quantizationLevels))
+        _rGamma = State(initialValue: current.rGamma)
+        _gGamma = State(initialValue: current.gGamma)
+        _bGamma = State(initialValue: current.bGamma)
+        _rGain = State(initialValue: current.rGain)
+        _gGain = State(initialValue: current.gGain)
+        _bGain = State(initialValue: current.bGain)
+        _isInverted = State(initialValue: current.isInverted)
+        _isPaused = State(initialValue: current.isPaused)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -98,20 +119,6 @@ struct ImageAdjustmentView: View {
             .padding(.horizontal, 12)
             .padding(.bottom, 8)
         }
-        .onAppear {
-            // The live adjustment is already applied; only mirror it in the sliders.
-            if let current = GammaService.shared.currentAdjustment(for: display.displayID) {
-                contrast = current.contrast
-                gammaVal = current.gammaVal
-                gain = current.gain
-                colorTemperature = current.colorTemperature
-                rGamma = current.rGamma; gGamma = current.gGamma; bGamma = current.bGamma
-                rGain = current.rGain;   gGain = current.gGain;   bGain = current.bGain
-                quantLevels = Double(current.quantizationLevels)
-                isInverted = current.isInverted
-                isPaused = current.isPaused
-            }
-        }
     }
 
     // MARK: - Slider row builder
@@ -138,9 +145,10 @@ struct ImageAdjustmentView: View {
                 .font(.caption)
                 .frame(width: 72, alignment: .leading)
 
-            Slider(value: $quantLevels, in: 2...256, step: 1) { _ in
-                commitAdjustment()
-            }
+            Slider(value: Binding(
+                get: { quantLevels },
+                set: { quantLevels = $0; commitAdjustment() }
+            ), in: 2...256, step: 1)
             .help(L("Niceleme düzeyini ayarla", "Adjust quantization level"))
 
             Text(quantLevels >= 256 ? "∞" : "\(Int(quantLevels))")
@@ -179,8 +187,8 @@ struct ImageAdjustmentView: View {
 
     // MARK: - Helpers
 
-    /// Applies and saves the current slider state (GammaService persists every change, so
-    /// nothing is lost when the panel closes or the app quits).
+    /// Applies the current slider state right away (GammaService saves it shortly after, and
+    /// at quit).
     private func commitAdjustment() {
         let adj = GammaAdjustment(
             contrast: contrast,
@@ -233,9 +241,13 @@ private struct AdjustRow: View {
                 .font(.caption)
                 .frame(width: 72, alignment: .leading)
 
-            Slider(value: $value, in: -100...100, step: 1) { editing in
+            // The binding's setter runs only for the user's own changes (drag, click,
+            // keyboard, VoiceOver): apply each one live.
+            Slider(value: Binding(
+                get: { value },
+                set: { value = $0; commitAction() }
+            ), in: -100...100, step: 1) { editing in
                 if !editing {
-                    commitAction()
                     withAnimation(.easeOut(duration: 0.3)) { highlighted = true }
                     Task { @MainActor in
                         try? await Task.sleep(nanoseconds: 400_000_000)

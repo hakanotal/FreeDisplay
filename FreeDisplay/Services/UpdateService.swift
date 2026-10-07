@@ -12,14 +12,15 @@ final class UpdateService: ObservableObject, @unchecked Sendable {
 
     // Current app bundle version (CFBundleShortVersionString)
     let currentVersion: String = {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.3"
     }()
 
     @Published var latestVersion: String? = nil
     @Published var releaseURL: URL? = nil
-    @Published var isChecking: Bool = false
     @Published var hasUpdate: Bool = false
     @Published var lastCheckDate: Date? = nil
+
+    private var isChecking = false
 
     private init() {}
 
@@ -61,6 +62,10 @@ final class UpdateService: ObservableObject, @unchecked Sendable {
                 hasUpdate = isNewerVersion(clean, than: currentVersion)
             }
             lastCheckDate = Date()
+        } catch is CancellationError {
+            // Cancelled (e.g. the caller went away): try again next time, not in an hour.
+        } catch let error as URLError where error.code == .cancelled {
+            // Same as above.
         } catch {
             // Network unavailable or repo doesn't exist — silently ignore
             lastCheckDate = Date()

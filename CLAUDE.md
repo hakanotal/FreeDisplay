@@ -12,7 +12,9 @@ Swift 6 + SwiftUI (`MenuBarExtra`) + IOKit + CoreGraphics. No third-party depend
 ```bash
 xcodegen generate          # after editing project.yml or adding files
 xcodebuild -scheme FreeDisplay -configuration Debug build 2>&1 | tail -5
-./build.sh                 # Release archive + DMG in build/
+./scripts/build-app-clt.sh # without Xcode: universal app with the Command Line Tools
+./scripts/build-dmg.sh     # Release app + DMG in build/ (Xcode or CLT)
+./scripts/release.sh       # DMG + GitHub release; notes from the CHANGELOG section
 ```
 
 There is no automated test suite. DDC, HiDPI and brightness changes must be checked on a real external display.
@@ -28,6 +30,8 @@ There is no automated test suite. DDC, HiDPI and brightness changes must be chec
 - Views never call CoreGraphics/IOKit directly; go through a Service.
 - Services are `@MainActor final class … : ObservableObject, @unchecked Sendable` singletons (`static let shared`).
 - Row components with local state (`isHovered`, `isLoading`) are separate `struct`s named `XxxRow`, not `@ViewBuilder` functions.
+- Expanding sections use `Disclosure` (MenuBarView): toggle without `withAnimation`, `.transition(Disclosure.content)`, animate only the chevron. Never animate the panel's height.
+- A view that only reads a `DisplayInfo`'s constant fields takes `let display`, not `@ObservedObject` (every brightness tick would re-render it).
 - UserDefaults keys always use the `fd.` prefix (`fd.launchAtLogin`).
 - When changing `DisplayInfo` properties, grep every reference and update them.
 - Concurrency errors: use `@MainActor` or `@unchecked Sendable` (`SWIFT_STRICT_CONCURRENCY: minimal`).
@@ -42,7 +46,8 @@ There is no automated test suite. DDC, HiDPI and brightness changes must be chec
 - HiDPI uses plist overrides in `/Library/Displays/Contents/Resources/Overrides/` (admin via `NSAppleScript`). Never use `CGConfigureDisplayMirrorOfDisplay` for HiDPI. Never set `DisplayProductName`.
 - Private frameworks: `dlopen` + `dlsym`, never `@_silgen_name`.
 - `CGVirtualDisplay`: non-zero `vendorID`, create on the main thread. Bridging-header names follow Chromium's `virtual_display_mac_util.mm`.
-- Don't match IOKit services via `CGDisplayVendorNumber/ModelNumber`. Use `NSScreen.localizedName` for names. DDC may be unavailable, so the UI must degrade gracefully.
+- Match IOKit services to displays only through DDCService's scored matcher (framebuffer `ProductAttributes` vs vendor/model/real serial + `NSScreen.localizedName`); never by vendor/model equality alone or by sorted index. Use `NSScreen.localizedName` for names. DDC may be unavailable, so the UI must degrade gracefully.
+- Per-ID in-memory state must be dropped in the service's `forgetDisplay(_:)` (display IDs get reused by other monitors).
 
 **Ask the user first** before adding new private APIs, anything that needs SIP off or special permissions, third-party dependencies, or architecture changes.
 

@@ -3,25 +3,35 @@ import SwiftUI
 // MARK: - DisplayDetailView
 
 struct DisplayDetailView: View {
-    @ObservedObject var display: DisplayInfo
-    @EnvironmentObject var displayManager: DisplayManager
-    @State private var showModeList: Bool = false
-    @State private var showColorProfile: Bool = false
-    @State private var showImageAdjustment: Bool = false
+    /// Not observed: the rows that show changing values observe the display themselves, so a
+    /// brightness tick doesn't rebuild the whole panel.
+    let display: DisplayInfo
+    @State private var showModeList: Bool
+    @State private var showColorProfile: Bool
+    @State private var showImageAdjustment: Bool
     @State private var colorSpaceName: String = ""
 
-    private func sectionKey(_ name: String) -> String {
+    /// Expanded sections are read here, not in onAppear, so the panel opens at its final
+    /// height instead of growing a frame later.
+    init(display: DisplayInfo) {
+        self.display = display
+        _showModeList = State(initialValue: Self.loadExpanded("modeList", for: display, default: false))
+        _showColorProfile = State(initialValue: Self.loadExpanded("colorProfile", for: display, default: false))
+        _showImageAdjustment = State(initialValue: Self.loadExpanded("imageAdjust", for: display, default: false))
+    }
+
+    private static func sectionKey(_ name: String, for display: DisplayInfo) -> String {
         "fd.expanded.\(display.displayUUID).\(name)"
     }
 
-    private func loadExpanded(_ name: String, default value: Bool) -> Bool {
-        let key = sectionKey(name)
+    private static func loadExpanded(_ name: String, for display: DisplayInfo, default value: Bool) -> Bool {
+        let key = sectionKey(name, for: display)
         guard UserDefaults.standard.object(forKey: key) != nil else { return value }
         return UserDefaults.standard.bool(forKey: key)
     }
 
     private func saveExpanded(_ name: String, _ value: Bool) {
-        UserDefaults.standard.set(value, forKey: sectionKey(name))
+        UserDefaults.standard.set(value, forKey: Self.sectionKey(name, for: display))
     }
 
     var body: some View {
@@ -36,29 +46,12 @@ struct DisplayDetailView: View {
             HiDPIRowView(display: display)
 
             // Display mode list toggle row
-            ExpandableRow(
-                icon: "rectangle.on.rectangle",
-                label: L("Ekran Modları", "Display Modes"),
-                subtitle: {
-                    var parts: [String] = []
-                    if let mode = display.currentDisplayMode {
-                        parts.append(mode.resolutionString)
-                    }
-                    if display.currentDisplayMode?.isHiDPI == true {
-                        parts.append("HiDPI")
-                    }
-                    return parts.joined(separator: " · ")
-                }(),
-                isExpanded: $showModeList
-            )
+            DisplayModesRow(display: display, isExpanded: $showModeList)
 
             if showModeList {
                 DisplayModeListView(display: display)
                     .padding(.leading, 8)
-                    .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .move(edge: .top)),
-                        removal: .opacity
-                    ))
+                    .transition(Disclosure.content)
             }
 
             Divider().opacity(0.3).padding(.vertical, 2)
@@ -75,10 +68,7 @@ struct DisplayDetailView: View {
             if showColorProfile {
                 ColorProfileView(display: display)
                     .padding(.leading, 8)
-                    .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .move(edge: .top)),
-                        removal: .opacity
-                    ))
+                    .transition(Disclosure.content)
             }
 
             // Image adjustment section
@@ -91,10 +81,7 @@ struct DisplayDetailView: View {
             if showImageAdjustment {
                 ImageAdjustmentView(display: display)
                     .padding(.leading, 8)
-                    .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .move(edge: .top)),
-                        removal: .opacity
-                    ))
+                    .transition(Disclosure.content)
             }
 
             Divider().opacity(0.3).padding(.vertical, 2)
@@ -108,17 +95,10 @@ struct DisplayDetailView: View {
         }
         .padding(.leading, 32)
         .background(Color(NSColor.controlBackgroundColor).opacity(0.4))
-        .onAppear {
-            showModeList = loadExpanded("modeList", default: false)
-            showColorProfile = loadExpanded("colorProfile", default: false)
-            showImageAdjustment = loadExpanded("imageAdjust", default: false)
-        }
         .onChange(of: showModeList) { _, v in saveExpanded("modeList", v) }
         .onChange(of: showColorProfile) { _, v in saveExpanded("colorProfile", v) }
         .onChange(of: showImageAdjustment) { _, v in saveExpanded("imageAdjust", v) }
         .task(id: display.displayID) {
-            colorSpaceName = ""
-            guard !Task.isCancelled else { return }
             colorSpaceName = ColorProfileService.shared.currentColorSpaceName(for: display.displayID)
         }
         // Keep the subtitle current after a profile switch (from this app or System Settings).
@@ -131,3 +111,22 @@ struct DisplayDetailView: View {
     }
 }
 
+/// The "Display Modes" section header; observes the display for the current mode.
+private struct DisplayModesRow: View {
+    @ObservedObject var display: DisplayInfo
+    @Binding var isExpanded: Bool
+
+    var body: some View {
+        ExpandableRow(
+            icon: "rectangle.on.rectangle",
+            label: L("Ekran Modları", "Display Modes"),
+            subtitle: subtitle,
+            isExpanded: $isExpanded
+        )
+    }
+
+    private var subtitle: String {
+        guard let mode = display.currentDisplayMode else { return "" }
+        return mode.isHiDPI ? "\(mode.resolutionString) · HiDPI" : mode.resolutionString
+    }
+}

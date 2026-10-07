@@ -30,7 +30,7 @@ private func displayReconfigCallback(
 
 @MainActor
 final class DisplayManager: ObservableObject {
-    @Published var displays: [DisplayInfo] = []
+    @Published private(set) var displays: [DisplayInfo] = []
 
     // nonisolated(unsafe) allows deinit (which is nonisolated in Swift 6) to access this value.
     nonisolated(unsafe) private var callbackContext: UnsafeMutableRawPointer?
@@ -39,6 +39,12 @@ final class DisplayManager: ObservableObject {
     private var pendingFlags: CGDisplayChangeSummaryFlags = []
     private var reconfigTask: Task<Void, Never>?
     private var autoArrangeTask: Task<Void, Never>?
+    private var wakeTask: Task<Void, Never>?
+    private var gammaTask: Task<Void, Never>?
+    /// Pending gamma reapply passes (absolute times), merged across triggers.
+    private var gammaDeadlines: [Date] = []
+    /// Recent gamma reapply passes, for the storm guard in `allowGammaPass`.
+    private var gammaPassTimes: [Date] = []
 
     init() {}
 
@@ -69,87 +75,90 @@ final class DisplayManager: ObservableObject {
         displays.first(where: { $0.isMain })?.displayID
     }
 
+    /// Syncs the display list with CoreGraphics. Kept displays are updated in place (their
+    /// @Published state survives); an ID that now belongs to another monitor is treated as a
+    /// removal plus an addition. Publishes only when something changed.
     func refreshDisplays() {
         var displayCount: UInt32 = 0
         CGGetOnlineDisplayList(0, nil, &displayCount)
         var displayIDs = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
         CGGetOnlineDisplayList(displayCount, &displayIDs, &displayCount)
+        let onlineIDs = Array(displayIDs.prefix(Int(displayCount)))
 
-        let currentIDs = Set(displays.map { $0.displayID })
-        let newIDSet = Set((0..<Int(displayCount)).map { displayIDs[$0] })
-
-        // Clean up DDC cache for removed displays to prevent stale entries accumulating
-        let removedIDs = currentIDs.subtracting(newIDSet)
-        removedIDs.forEach {
-            DDCService.shared.clearCache(for: $0)
-            BrightnessService.shared.invalidateDDCState(for: $0)
-        }
-
-        // Diff-based refresh: keep existing DisplayInfo objects (preserves @Published state)
         let existingByID = Dictionary(uniqueKeysWithValues: displays.map { ($0.displayID, $0) })
+        var updated: [DisplayInfo] = []
+        var added: [DisplayInfo] = []
+        var forgotten: [CGDirectDisplayID] = []
+        var changed = false
 
-        var updatedDisplays: [DisplayInfo] = []
-        var addedDisplays: [DisplayInfo] = []
-
-        for i in 0..<Int(displayCount) {
-            let id = displayIDs[i]
-            if let existing = existingByID[id] {
-                updatedDisplays.append(existing)
+        for id in onlineIDs {
+            if let existing = existingByID[id], existing.isSameMonitor(as: id) {
+                if existing.refreshState() { changed = true }
+                updated.append(existing)
             } else {
+                if existingByID[id] != nil { forgotten.append(id) }  // same ID, other monitor
                 let info = DisplayInfo(displayID: id)
-                updatedDisplays.append(info)
-                addedDisplays.append(info)
+                updated.append(info)
+                added.append(info)
             }
         }
+        forgotten += existingByID.keys.filter { !onlineIDs.contains($0) }
 
-        // For displays that were already present, update geometry, flags and name (no DDC probe).
-        let keptIDs = currentIDs.intersection(newIDSet)
-        for display in updatedDisplays where keptIDs.contains(display.displayID) {
-            let id = display.displayID
-            let bounds = CGDisplayBounds(id)
-            if display.bounds != bounds { display.bounds = bounds }
-            let isMain = CGDisplayIsMain(id) != 0
-            if display.isMain != isMain { display.isMain = isMain }
-            let isMirrorTarget = CGDisplayMirrorsDisplay(id) != kCGNullDirectDisplay
-            if display.isMirrorTarget != isMirrorTarget { display.isMirrorTarget = isMirrorTarget }
-            display.refreshName()
+        // Clear per-ID state so a monitor that later gets one of these IDs starts clean.
+        for id in forgotten {
+            DDCService.shared.clearCache(for: id)
+            BrightnessService.shared.forgetDisplay(id)
+            GammaService.shared.forgetDisplay(id)
         }
 
-        // Reassigning always publishes, so views that read bounds re-render.
-        displays = updatedDisplays
-        DisplayManagerAccessor.shared.displays = updatedDisplays
+        if !added.isEmpty || !forgotten.isEmpty || updated.map(\.displayID) != displays.map(\.displayID) {
+            changed = true
+        }
+        guard changed else { return }
 
-        // Only load details / refresh brightness for newly appeared displays
-        for display in addedDisplays {
-            Task { await BrightnessService.shared.refreshBrightness(for: display) }
-            Task {
-                await display.loadDetails()
-                // Auto-enable HiDPI for new external 2K+ displays that don't have it yet
-                if !display.isBuiltin {
-                    await self.autoEnableHiDPIIfNeeded(for: display)
-                }
-            }
-            // Restore saved gamma/software-brightness adjustments for the reconnected display.
-            // Brief delay lets WindowServer settle before we write transfer tables.
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 300_000_000)
-                BrightnessService.shared.reapplySoftwareBrightnessIfNeeded(for: display)
-                GammaService.shared.reapplyIfNeeded(for: display.displayID)
+        displays = updated
+        DisplayManagerAccessor.shared.displays = updated
+        publishDisplayDependents()
+
+        if !added.isEmpty || !forgotten.isEmpty {
+            BrightnessService.shared.noteTopologyChange()
+        }
+        for display in added {
+            prepareNewDisplay(display)
+        }
+    }
+
+    /// Hands the current display set to services that need it outside the main actor.
+    private func publishDisplayDependents() {
+        let externals = displays.filter { !$0.isBuiltin && !$0.isVirtual }
+        DDCService.shared.updateCandidates(externals.map {
+            DDCCandidate(displayID: $0.displayID, vendor: $0.vendorNumber, model: $0.modelNumber,
+                         serial: $0.serialNumber, name: NSScreen.screen(for: $0.displayID)?.localizedName)
+        })
+        BrightnessKeyService.shared.updateManagedDisplays(Set(externals.map(\.displayID)))
+        PresetService.shared.updateCurrentMatch()
+    }
+
+    private func prepareNewDisplay(_ display: DisplayInfo) {
+        Task { await BrightnessService.shared.refreshBrightness(for: display) }
+        Task {
+            await display.loadDetails()
+            // Auto-enable HiDPI for new external 2K+ displays that don't have it yet
+            if !display.isBuiltin && !display.isVirtual {
+                self.autoEnableHiDPIIfNeeded(for: display)
             }
         }
+        // Restore saved adjustments, software brightness and night mode for the new display
+        // once WindowServer has set it up (its profile loads after it appears).
+        scheduleGammaReapply(after: [0.3, 2.0], reason: "display added")
     }
 
     /// Refreshes the current mode of every tracked display (after setMode / setMain events).
     func refreshCurrentModes() {
         for display in displays {
-            let displayID = display.displayID
-            Task {
-                let newMode = await Task.detached(priority: .userInitiated) {
-                    DisplayMode.currentMode(for: displayID)
-                }.value
-                display.currentDisplayMode = newMode
-            }
+            display.refreshCurrentMode()
         }
+        PresetService.shared.updateCurrentMatch()
     }
 
     /// Re-applies app-generated display names after an in-app language switch.
@@ -182,6 +191,10 @@ final class DisplayManager: ObservableObject {
             if !flags.isDisjoint(with: [.setModeFlag, .setMainFlag]) {
                 self.refreshCurrentModes()
             }
+            // Completing any display configuration (arrangement, main display, mode, mirroring,
+            // a display added or removed, the lid opened) makes macOS reload the profiles,
+            // which resets transfer tables, sometimes a moment later. Reapply as it settles.
+            self.scheduleGammaReapply(after: [0, 0.5, 2.0], reason: "reconfiguration")
             if !flags.isDisjoint(with: [.addFlag, .removeFlag, .setModeFlag]) {
                 self.scheduleAutoArrange()
             }
@@ -236,31 +249,99 @@ final class DisplayManager: ObservableObject {
         }
     }
 
-    // MARK: - Wake
+    // MARK: - Transfer tables
 
-    /// Restores display state after wake. Sleep resets every transfer table, displays may
-    /// come back with new IOKit services, and macOS can reset modes.
-    func reapplyDisplayStateAfterWake() async {
-        // Give WindowServer time to stabilize after wake before touching display state.
-        try? await Task.sleep(nanoseconds: 2_000_000_000)
-        refreshDisplays()
-        try? await Task.sleep(nanoseconds: 500_000_000)
-        reapplyDisplayState(reprobeDDC: true)
-        ResolutionService.shared.restoreModesAfterWake()
+    /// Rewrites the transfer function of every display with active state (image adjustment,
+    /// software brightness, night mode). Idempotent and cheap; displays with nothing to apply
+    /// are not touched.
+    func reapplyGamma() {
+        for display in displays {
+            GammaService.shared.reapplyIfNeeded(for: display.displayID)
+        }
     }
 
-    /// Re-applies software brightness, then gamma for every display. Brightness must come
-    /// first: GammaService reads its factor. With `reprobeDDC`, DDC support is detected
-    /// again so one failure (e.g. a monitor still waking up) isn't permanent.
-    func reapplyDisplayState(reprobeDDC: Bool) {
-        for display in displays {
-            if reprobeDDC && !display.isBuiltin {
+    /// Runs `reapplyGamma` at each of `delays` (seconds from now). Requests are merged: a new
+    /// trigger adds its passes to the pending ones, and passes due within 50 ms of each other
+    /// run once. Transfer-table writes post neither a color-space change nor a display
+    /// reconfiguration, so this can't feed itself; the storm guard caps it if a macOS version
+    /// ever does.
+    func scheduleGammaReapply(after delays: [Double], reason: String) {
+#if DEBUG
+        print("[DisplayManager] gamma reapply scheduled: \(reason)")
+#endif
+        let now = Date()
+        gammaDeadlines = (gammaDeadlines + delays.map { now.addingTimeInterval($0) }).sorted()
+        // Restart the loop so it sleeps until the (possibly new) earliest deadline; the
+        // deadlines themselves live in `gammaDeadlines`, so nothing is lost.
+        gammaTask?.cancel()
+        gammaTask = Task { [weak self] in
+            while !Task.isCancelled, let self, let next = self.gammaDeadlines.first {
+                let wait = next.timeIntervalSinceNow
+                if wait > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                    if Task.isCancelled { return }
+                }
+                let cutoff = Date().addingTimeInterval(0.05)
+                self.gammaDeadlines.removeAll { $0 <= cutoff }
+                if self.allowGammaPass() { self.reapplyGamma() }
+            }
+        }
+    }
+
+    private func allowGammaPass() -> Bool {
+        let now = Date()
+        gammaPassTimes = gammaPassTimes.filter { now.timeIntervalSince($0) < 5 } + [now]
+        guard gammaPassTimes.count <= 20 else {
+#if DEBUG
+            print("[DisplayManager] gamma reapply storm: skipping pass")
+#endif
+            return false
+        }
+        return true
+    }
+
+    /// A display profile changed (here or in System Settings): ColorSync rewrote the table.
+    func handleColorSpaceChange() {
+        GammaService.shared.invalidateCalibration()
+        scheduleGammaReapply(after: [0.1, 1.0], reason: "color space changed")
+    }
+
+    /// Displays woke from display sleep (without system sleep).
+    func handleScreensWake() {
+        scheduleGammaReapply(after: [0, 0.5, 2.0], reason: "screens woke")
+    }
+
+    // MARK: - Wake
+
+    /// Restores display state after system wake. Sleep resets every transfer table, displays
+    /// may come back with new IOKit services, and macOS can reset modes.
+    func reapplyDisplayStateAfterWake() {
+        // In-memory state survives sleep: put it back right away instead of showing full
+        // brightness (or no night mode) until WindowServer has settled.
+        reapplyGamma()
+        BrightnessService.shared.noteTopologyChange()
+
+        wakeTask?.cancel()
+        wakeTask = Task { [weak self] in
+            // Give WindowServer time to stabilize after wake before touching display state.
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.refreshDisplays()
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
+            // Modes first: a mode change can reset the table (the reconfiguration it causes
+            // schedules another gamma pass).
+            ResolutionService.shared.restoreModesAfterWake()
+            for display in self.displays where !display.isBuiltin && !display.isVirtual {
+                // Detect DDC again so one failure while a monitor was waking isn't permanent.
                 DDCService.shared.clearCache(for: display.displayID)
                 BrightnessService.shared.invalidateDDCState(for: display.displayID)
                 Task { await BrightnessService.shared.refreshBrightness(for: display) }
             }
-            BrightnessService.shared.reapplySoftwareBrightnessIfNeeded(for: display)
-            GammaService.shared.reapplyIfNeeded(for: display.displayID)
+            GammaService.shared.invalidateCalibration()
+            // Panels power up at different speeds (a lid opened at wake): keep reapplying
+            // for a few seconds.
+            self.scheduleGammaReapply(after: [0, 1.0, 3.0], reason: "wake")
         }
     }
 
@@ -269,12 +350,10 @@ final class DisplayManager: ObservableObject {
     /// Auto-enables the HiDPI plist override for external 2K+ displays that don't have it
     /// yet, so a new monitor "just works". Skipped when the user turned HiDPI off for this
     /// monitor, or when it would need an admin password (never prompt unasked).
-    private func autoEnableHiDPIIfNeeded(for display: DisplayInfo) async {
+    private func autoEnableHiDPIIfNeeded(for display: DisplayInfo) {
         let vendor = display.vendorNumber
         let product = display.modelNumber
         guard vendor != 0, product != 0 else { return }
-        // Skip FreeDisplay's own virtual displays (VirtualDisplayService uses vendor 0xEEEE).
-        guard vendor != 0xEEEE else { return }
 
         let hiDPI = HiDPIService.shared
         guard !hiDPI.isHiDPIEnabled(vendor: vendor, product: product),
@@ -286,12 +365,10 @@ final class DisplayManager: ObservableObject {
         // Only auto-enable for 2K+ displays (width >= 2560 or total pixels >= 2560*1440)
         guard nativeW >= 2560 || (nativeW * nativeH >= 2560 * 1440) else { return }
 
+#if DEBUG
         print("[DisplayManager] Auto-enabling HiDPI for \(display.name) (\(nativeW)×\(nativeH), vendor=\(vendor), product=\(product))")
-
-        if let err = hiDPI.enableHiDPI(vendor: vendor, product: product,
-                                       nativeWidth: nativeW, nativeHeight: nativeH) {
-            print("[DisplayManager] Auto-enable HiDPI failed: \(err)")
-        } else {
+#endif
+        if hiDPI.enableHiDPI(vendor: vendor, product: product, nativeWidth: nativeW, nativeHeight: nativeH) == nil {
             hiDPI.refreshModes(for: display)
         }
     }

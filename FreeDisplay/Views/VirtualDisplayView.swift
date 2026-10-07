@@ -134,7 +134,7 @@ struct VirtualDisplayView: View {
                              : L("Sanal ekranı aç", "Turn on this virtual display"))
             }
 
-            // Delete button
+            // Delete button (not while the display is being turned on)
             Button(action: {
                 configToDelete = config.id
             }) {
@@ -143,6 +143,7 @@ struct VirtualDisplayView: View {
                     .foregroundColor(.red)
             }
             .buttonStyle(.plain)
+            .disabled(togglingConfigID == config.id)
             .accessibilityLabel(L("Sil", "Delete"))
             .help(L("Bu sanal ekranı sil", "Delete this virtual display"))
         }
@@ -170,7 +171,8 @@ struct VirtualDisplayView: View {
         Task { @MainActor in
             let success = await service.create(config: config)
             togglingConfigID = nil
-            if !success {
+            // Not an error when the config was deleted or turned off meanwhile.
+            if !success, service.configs.contains(where: { $0.id == config.id }) {
                 createError = L("Sanal ekran oluşturulamadı, tekrar deneyin", "Couldn't create virtual display, please try again")
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 createError = nil

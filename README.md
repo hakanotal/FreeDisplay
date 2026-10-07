@@ -4,11 +4,11 @@
 
 BetterDisplay is a great app, but its best features are locked behind a paid Pro license. FreeDisplay implements the most essential BetterDisplay features as a completely free, open-source macOS menu bar app.
 
+FreeDisplay is the sibling of [FreeAudio](https://github.com/hakanotal/FreeAudio) and shares its foundation and look.
+
 [Download Latest Release](https://github.com/hakanotal/FreeDisplay/releases/latest) | [Report an Issue](https://github.com/hakanotal/FreeDisplay/issues)
 
 ---
-
-> maintained by [@hakanotal](https://github.com/hakanotal)   
 
 [!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://buymeacoffee.com/hakantotal)
 
@@ -28,6 +28,9 @@ BetterDisplay is a great app, but its best features are locked behind a paid Pro
 - **Built-in brightness on Apple Silicon (v2.2)** — the built-in slider, combined slider and auto brightness now actually work on M-series Macs
 - **Notch (v2.2)** — "Hide notch area" blacks out the menu bar row around the notch, keeps menu items visible and is remembered
 - **Reliability (v2.2)** — settings are restored after sleep and at login, image adjustments no longer reset your color profile, turning HiDPI off for a monitor sticks. See the [CHANGELOG](CHANGELOG.md) for the full list
+- **Right monitor, smoother brightness (v2.3)** — monitors are recognized by their own identity, so with several screens (or a virtual, Sidecar or AirPlay one) brightness never drives the wrong display; DDC sliders and brightness keys keep up without lag; Studio Display and Pro Display XDR use their own backlight
+- **Night mode stays on (v2.3)** — arranging displays, opening the lid, switching the color profile and waking no longer drop night mode, dimming or image adjustments, and calibrated profiles are kept
+- **Snappier menu (v2.3)** — sections open instantly like in FreeAudio, the panel opens at its final size, and a new app icon matches FreeAudio's
 
 ---
 
@@ -35,7 +38,7 @@ BetterDisplay is a great app, but its best features are locked behind a paid Pro
 
 | BetterDisplay Feature | FreeDisplay | Notes |
 |----------------------|:-----------:|-------|
-| DDC Brightness | ✅ | Hardware control via IOKit I2C (Intel) / IOAVService (Apple Silicon); software dimming when DDC isn't available |
+| DDC Brightness | ✅ | Hardware control via IOKit I2C (Intel) / IOAVService (Apple Silicon), each monitor matched to its own DDC channel; Apple displays use their own backlight; software dimming when DDC isn't available |
 | Software Brightness (Gamma) | ✅ | Per-display gamma table control with smooth transitions |
 | Keyboard Brightness Keys for External Displays | ✅ | Intercepts brightness keys when cursor is on external display, shows native macOS OSD |
 | Auto Brightness Sync | ✅ | Syncs external display brightness with built-in display changes |
@@ -43,11 +46,11 @@ BetterDisplay is a great app, but its best features are locked behind a paid Pro
 | Display Arrangement | ✅ | Drag to arrange with edge snapping, set the main display, optional "external above built-in" |
 | Resolution & HiDPI Switching | ✅ | Browse and switch all available display modes including HiDPI |
 | ICC Color Profile Management | ✅ | Switch color profiles per display via ColorSync |
-| Image Adjustment (Gamma/Temperature) | ✅ | Software contrast, color temperature, RGB channels, invert |
+| Image Adjustment (Gamma/Temperature) | ✅ | Software contrast, color temperature, RGB channels, invert; applied live, on top of the profile's calibration |
 | Display Presets | ✅ | Save & restore full display configurations with one click |
 | Virtual Display (Dummy) | ✅ | Create virtual displays via the CGVirtualDisplay private API; switch them on and off |
 | Notch Management | ✅ | Black out the menu bar row around the MacBook notch (menu items stay visible) |
-| Launch at Login | ✅ | Per-user launchd agent; also restarts FreeDisplay after a crash |
+| Launch at Login | ✅ | Per-user launchd agent (takes effect at the next login); also restarts FreeDisplay after a crash |
 
 ### Not Included (intentionally)
 
@@ -94,7 +97,7 @@ Xcode is optional: without it the script builds with the Command Line Tools (`xc
 
 | Permission | Why |
 |------------|-----|
-| **Accessibility** | Required for brightness key interception on external displays |
+| **Accessibility** | Required for brightness key interception on external displays. Takes effect without a restart. Builds aren't notarized, so after an update macOS may need it again: turn FreeDisplay off and on in **System Settings → Privacy & Security → Accessibility** |
 | **Administrator password** (once per monitor brand) | Turning HiDPI on or off writes override files under `/Library/Displays` |
 
 No internet connection required (except optional update checks via GitHub Releases API).
@@ -108,7 +111,7 @@ No internet connection required (except optional update checks via GitHub Releas
 - **CoreGraphics** — Display enumeration, resolution, arrangement
 - **ColorSync** — ICC color profile management
 - **CGVirtualDisplay** — Virtual display creation (private API, macOS 14+)
-- **DisplayServices** — Built-in display brightness on Apple Silicon (private API, via dlopen)
+- **DisplayServices** — Built-in and Apple display backlight (private API, via dlopen)
 - Zero third-party dependencies
 
 ---
@@ -130,12 +133,13 @@ FreeDisplay/
 
 FreeDisplay sits in your menu bar and talks directly to your displays:
 
-- **External monitors**: Uses the DDC/CI protocol over I2C (Intel) or IOAVService (Apple Silicon) to control hardware brightness. If a monitor doesn't answer DDC (common with USB-C dongles and docks), FreeDisplay dims it in software through the display's gamma table instead
-- **Built-in display**: Uses the system brightness control (DisplayServices on Apple Silicon, IOKit on Intel)
-- **Brightness keys**: Installs a CGEventTap to intercept keyboard brightness keys and route them to the display under your mouse cursor
+- **External monitors**: Uses the DDC/CI protocol over I2C (Intel) or IOAVService (Apple Silicon) to control hardware brightness. Each monitor is matched to its own DDC channel by vendor, model, serial number and name, and commands are coalesced so sliders and keys never queue up. If a monitor doesn't answer DDC (common with USB-C dongles and docks), FreeDisplay dims it in software through the display's gamma table instead
+- **Built-in and Apple displays**: Use the system backlight control (DisplayServices; IOKit on older Intel Macs)
+- **Brightness keys**: Installs a CGEventTap (on its own thread) to intercept keyboard brightness keys and route them to the display under your mouse cursor
+- **Night mode, image adjustments and software dimming**: Combined into one gamma curve per display, layered on the color profile's calibration and re-applied whenever macOS resets it (wake, display sleep, opening the lid, rearranging, switching profiles)
 - **Auto brightness**: Polls the built-in display brightness and proportionally adjusts external displays
 - **Arrangement**: Moves all displays in one configuration change that macOS saves, like System Settings does
-- **HiDPI**: Writes display override plists to `/Library/Displays` so macOS offers HiDPI modes (they appear after the monitor reconnects)
+- **HiDPI**: Adds HiDPI resolutions to the monitor's override plist in `/Library/Displays` (other settings in that file are kept), so macOS offers HiDPI modes (they appear after the monitor reconnects)
 
 ---
 

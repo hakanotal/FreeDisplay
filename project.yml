@@ -16,8 +16,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.freedisplay.app
-        MARKETING_VERSION: "2.2"
-        CURRENT_PROJECT_VERSION: "4"
+        MARKETING_VERSION: "2.3"
+        CURRENT_PROJECT_VERSION: "5"
         INFOPLIST_KEY_LSUIElement: true
         INFOPLIST_KEY_NSHumanReadableCopyright: "FreeDisplay - Ücretsiz ve Açık Kaynak"
         SWIFT_VERSION: "6.0"
@@ -28,5 +28,4 @@ targets:
         SWIFT_STRICT_CONCURRENCY: minimal
         SWIFT_OBJC_BRIDGING_HEADER: FreeDisplay/FreeDisplay-Bridging-Header.h
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_NSScreenCaptureUsageDescription: "FreeDisplay, ekranların canlı önizlemesini göstermek için ekran kaydı iznine ihtiyaç duyar."
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

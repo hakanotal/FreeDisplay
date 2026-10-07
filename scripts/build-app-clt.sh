@@ -69,7 +69,6 @@ iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
 echo "==> Info.plist"
 COPYRIGHT="$(sed -n 's/^ *INFOPLIST_KEY_NSHumanReadableCopyright: *"\(.*\)"$/\1/p' "$ROOT/project.yml")"
-SCREEN_CAPTURE="$(sed -n 's/^ *INFOPLIST_KEY_NSScreenCaptureUsageDescription: *"\(.*\)"$/\1/p' "$ROOT/project.yml")"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -91,7 +90,6 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSHumanReadableCopyright</key><string>$COPYRIGHT</string>
-    <key>NSScreenCaptureUsageDescription</key><string>$SCREEN_CAPTURE</string>
 </dict>
 </plist>
 PLIST

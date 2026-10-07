@@ -4,6 +4,32 @@ All notable changes to FreeDisplay are documented here.
 
 ---
 
+## v2.3 (2026-10-07)
+
+Fixes and speed-ups from a full review of every file.
+
+- **Brightness drives the right monitor**: on Apple Silicon the monitor matching never worked, so DDC paired monitors with displays by position. With two monitors, or a monitor plus a virtual display, Sidecar or AirPlay screen, a slider could change the wrong screen or fall back to software dimming. Monitors are now matched by their own identity (vendor, model, serial, name)
+- **Smoother, faster brightness**: DDC commands no longer queue up behind each other: only the latest value is sent, spaced the way monitors expect, so dragging the slider or holding the brightness keys keeps up. Quick key presses no longer lose steps. Brightness keys keep working while the app is busy (for example during an administrator prompt)
+- **Apple displays**: Studio Display, Pro Display XDR and UltraFine now change their own backlight instead of being dimmed in software
+- **Night mode and dimming stay on**: arranging displays, changing the main display, opening or closing the lid, switching the color profile, display sleep, resolution changes and waking no longer reset night mode, software dimming or image adjustments (on one display or all), and waking no longer flashes full brightness for a few seconds
+- **Calibrated displays**: night mode, dimming and image adjustments now build on a calibrated profile's correction curve instead of replacing it, and quitting or Reset All brings the calibration back
+- **Status is accurate**: the DDC / Software / System label is right as soon as the panel opens; a monitor that briefly failed DDC (still waking up) is checked again instead of staying on software dimming until the next sleep; monitors with a 0–255 brightness range reach 100 %; the combined slider follows changes made with the keys, Auto Brightness or presets
+- **No state carried to the wrong monitor**: when macOS gives a display ID to another monitor, it no longer inherits the previous monitor's dimming or image adjustments
+- **Image adjustments preview live** while you drag, and keyboard changes to sliders apply too
+- **Resolution on mirrored displays**: choosing a mode on a display that mirrors another no longer applies a random mode to the source display; it explains where to change it instead
+- **HiDPI**: turning HiDPI off keeps other settings in the display's override file (such as a "force RGB" EDID patch) and Apple's own overrides; errors stay visible after the password prompt closes the menu, and a hint explains that new modes appear after reconnecting the display
+- **Auto Brightness** can always be turned off (it got stuck on with the lid closed or on Macs without a built-in screen), follows changes smoothly, and polls less often while there is no built-in screen
+- **Launch at login**: turning it on no longer restarts FreeDisplay on the spot, and opening the app by hand no longer briefly flashes brightness and night mode while launchd takes over
+- **Updates**: the update check runs at launch, and closing the menu no longer cancels it and hides updates for an hour
+- **Virtual displays**: deleting one while it is still being created no longer leaves a display running that can't be turned off
+- **Faster menu**: sections open and close like in FreeAudio (the panel snaps to its new size and new content fades in, instead of a slow spring that resized the window frame by frame); the panel opens at its final size without jumping; brightness changes no longer redraw the whole display panel; color profiles load from a cache and skip non-display profiles; the resolution list is grouped once; idle timers run less
+- **New app icon** in the same style as FreeAudio: a white monitor with a brightness fader on the shared blue-to-purple tile
+- **Other**: the stale screen-recording permission text was removed; a deprecated system function Apple may remove can no longer stop the app from launching; Intel Macs use the correct DDC bus and validate replies
+
+**After updating:** if the brightness keys stop working, turn FreeDisplay off and on again in System Settings → Privacy & Security → Accessibility (builds aren't notarized, so macOS asks again after an update). FreeDisplay picks it up without a restart.
+
+---
+
 ## v2.2 (2026-10-06)
 
 Display arrangement fix and fixes from a full code review.
